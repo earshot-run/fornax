@@ -47,13 +47,33 @@ func TestModalityNeedsAProjector(t *testing.T) {
 			if spec.mmproj == nil {
 				t.Errorf("%s: %s model has no projector pin", spec.id, spec.kind)
 			}
-		case modalText:
+		case modalText, modalDecision:
 			if spec.mmproj != nil {
-				t.Errorf("%s: text model carries a projector", spec.id)
+				t.Errorf("%s: %s model carries a projector", spec.id, spec.kind)
 			}
 		default:
 			t.Errorf("%s: unknown kind", spec.id)
 		}
+	}
+}
+
+func TestKevPinsPointAtGitHub(t *testing.T) {
+	for _, spec := range models {
+		if spec.rt != runtimeKev {
+			continue
+		}
+		if spec.dtype != "" && spec.dtype != "bf16" && spec.dtype != "fp16" {
+			t.Errorf("%s: unexpected dtype %q", spec.id, spec.dtype)
+		}
+		if spec.fitBytes <= spec.model.bytes {
+			t.Errorf("%s: fitBytes should exceed the adapter-only tarball", spec.id)
+		}
+		if !strings.HasPrefix(spec.model.url, "https://github.com/jaredpalmer/kev/releases/") {
+			t.Errorf("%s: kev tarball does not come from the pinned release", spec.id)
+		}
+	}
+	if len(kevSource.sha256) != 64 || kevSource.bytes <= 0 {
+		t.Error("incomplete kev source pin")
 	}
 }
 

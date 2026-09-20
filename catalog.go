@@ -22,6 +22,7 @@ const (
 	modalText modality = iota
 	modalVision
 	modalAudio
+	modalDecision
 )
 
 func (m modality) String() string {
@@ -30,15 +31,28 @@ func (m modality) String() string {
 		return "vision"
 	case modalAudio:
 		return "audio"
+	case modalDecision:
+		return "decision"
 	}
 	return "text"
 }
+
+// What serves the model. runtimeLlama is the pinned llama.cpp binary;
+// runtimeKev is the python kev.serve app (see kev.go).
+type runtimeKind int
+
+const (
+	runtimeLlama runtimeKind = iota
+	runtimeKev
+)
 
 type filePin struct {
 	file     string
 	revision string
 	bytes    int64
 	sha256   string
+	// Non-Hugging-Face sources set this directly (kev release tarballs).
+	url string
 }
 
 type modelSpec struct {
@@ -46,15 +60,33 @@ type modelSpec struct {
 	name    string
 	summary string
 	kind    modality
+	rt      runtimeKind
 	repo    string
 	model   filePin
 	// Companion projector (vision/audio). nil for text-only models.
 	mmproj *filePin
-	port   int
+	// kev only: KEV_DTYPE the server should run at ("" = fp32).
+	dtype string
+	// kev only: the RAM the merged model actually wants — the tarball is
+	// just the adapter, the base downloads separately and dwarfs it.
+	fitBytes int64
+	port     int
 }
 
 func (spec *modelSpec) url(pin *filePin) string {
+	if pin.url != "" {
+		return pin.url
+	}
 	return fmt.Sprintf("https://huggingface.co/%s/resolve/%s/%s", spec.repo, pin.revision, pin.file)
+}
+
+// The disk/RAM footprint the fit check and `list` should warn about. For kev
+// the downloaded adapter is small but the base model is not.
+func (spec *modelSpec) sizeBytes() int64 {
+	if spec.fitBytes > 0 {
+		return spec.fitBytes
+	}
+	return spec.totalBytes()
 }
 
 // Every artifact this model needs, main weights first.
@@ -187,6 +219,56 @@ var models = []modelSpec{
 			sha256:   "b34dde1835752949d6b960528269af93c92fec91c61ea0534fcc73f96c1ed8b2",
 		},
 		port: 7336,
+	},
+	{
+		id:      "kev-0.6b",
+		name:    "Kev 0.6B",
+		summary: "Typed questions, calibrated probabilities; fastest kev.",
+		kind:    modalDecision,
+		rt:      runtimeKev,
+		model: filePin{
+			file:     "kev-0.6b.tar.gz",
+			revision: "kev-family",
+			bytes:    43_262_595,
+			sha256:   "baf114336f20d5c21584d34cf516055b9d0cd7bc91634366a7fecb3f6cfd78fb",
+			url:      "https://github.com/jaredpalmer/kev/releases/download/kev-family/kev-0.6b.tar.gz",
+		},
+		fitBytes: 3 * gib,
+		port:     7341,
+	},
+	{
+		id:      "kev-4b",
+		name:    "Kev 4B",
+		summary: "Best accuracy per byte of the kev family; the one to start with.",
+		kind:    modalDecision,
+		rt:      runtimeKev,
+		model: filePin{
+			file:     "kev-4b.tar.gz",
+			revision: "kev-family",
+			bytes:    131_245_471,
+			sha256:   "01d3dc8eeccb4518e7053d94ce890d8ba7edbfa7d1c1687681c520dd1cde7769",
+			url:      "https://github.com/jaredpalmer/kev/releases/download/kev-family/kev-4b.tar.gz",
+		},
+		dtype:    "bf16",
+		fitBytes: 10 * gib,
+		port:     7342,
+	},
+	{
+		id:      "kev-8b",
+		name:    "Kev 8B",
+		summary: "Sharpest kev answers; wants a bigger machine.",
+		kind:    modalDecision,
+		rt:      runtimeKev,
+		model: filePin{
+			file:     "kev-8b.tar.gz",
+			revision: "kev-family",
+			bytes:    173_634_257,
+			sha256:   "4dd002a09f61de311a6ecea8f8e9b343b5a647a2f4bb4f0f0d24bc8a79c0d4a6",
+			url:      "https://github.com/jaredpalmer/kev/releases/download/kev-family/kev-8b.tar.gz",
+		},
+		dtype:    "bf16",
+		fitBytes: 18 * gib,
+		port:     7343,
 	},
 }
 

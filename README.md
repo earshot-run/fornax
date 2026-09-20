@@ -8,6 +8,9 @@ benchmark and clean up — one command at a time, on any machine. Connects to
 earshot-local ask qwen3-4b "explain a doorbell in one sentence"
 earshot-local see qwen2.5-vl-3b screenshot.png "what does this UI say?"
 earshot-local hear ultravox-1b take.wav
+earshot-local judge kev-4b --state "charged twice, order never arrived" \
+  --ask 'escalate|noul|Needs urgent human attention?' \
+  --ask 'team|choice|Which team?|returns|shipping|billing'
 ```
 
 Every command fetches what it needs — a pinned llama.cpp build plus pinned
@@ -34,8 +37,9 @@ and starts a loopback server if one isn't already running.
 | `earshot-local chat <model>` | Interactive conversation with history (`/exit`, `/clear`) |
 | `earshot-local see <model> <image> [question]` | Ask a vision model about a png/jpg/webp/gif |
 | `earshot-local hear <model> <audio> [question]` | Ask an audio model about a take; transcribes by default |
-| `earshot-local test <model>` | Load it, run a prompt, report tok/s |
-| `earshot-local bench <model>` | `llama-bench` on the weights (prompt/generation table) |
+| `earshot-local test <model>` | Load it, run a prompt, report speed |
+| `earshot-local bench <model>` | `llama-bench` on the weights (or kev latency over repeated calls) |
+| `earshot-local judge <model> --state "…" --ask 'id|type|question|opts…'` | Typed questions → calibrated probabilities (kev / TypeSafe API) |
 
 **Run models**
 
@@ -81,6 +85,7 @@ environment and requires a generated loopback API key
 ```
 ~/.earshot-local/
   engine/b11060/…        one unpacked llama.cpp release
+  kev/src/…              pinned kev source + its uv venv
   models/<id>/<file>     weights + projectors + verified.sha256
   models/<id>/*.part     resumable downloads
   server.key             loopback API key
@@ -99,13 +104,31 @@ environment and requires a generated loopback API key
 | `qwen3-14b` | text | 8.4 GB | the sharpest local take; wants 24 GB or more |
 | `qwen2.5-vl-3b` | vision | 2.6 GB | reads screenshots, photos and documents |
 | `ultravox-1b` | audio | 2.0 GB | hears audio takes; transcribes and answers |
+| `kev-0.6b` | decision | ~3 GB | typed questions → probabilities; fastest kev |
+| `kev-4b` | decision | ~10 GB | best accuracy per byte; the kev to start with |
+| `kev-8b` | decision | ~18 GB | sharpest kev answers; wants a bigger machine |
 
 Text models are `Qwen/Qwen3-*-GGUF`; vision is `ggml-org/Qwen2.5-VL-3B` and
 audio is `ggml-org/ultravox-v0_5-llama-3_2-1b` — all pinned revisions on
 Hugging Face, served by pinned llama.cpp `b11060` (`--mmproj` loads the
 projectors). `list` marks whether each fits your RAM.
 
+kev models are [jaredpalmer/kev](https://github.com/jaredpalmer/kev) — a
+Jev-style decision model (LoRA + readout head on Qwen3 base) that answers
+typed questions with calibrated probabilities over TypeSafe's
+`/v1/systemone` API instead of chatting. The pinned checkpoint tarball and a
+pinned source tarball are fetched like every other artifact; a `uv` venv is
+built once under `~/.earshot-local/kev/` (needs [uv](https://docs.astral.sh/uv/),
+macOS or Linux). The Qwen3 base model downloads from Hugging Face on first
+serve. `run kev-4b` prints a TypeSafe-SDK `base_url` block — the official
+`typesafe-sdk` works against it unchanged.
+
+`judge` flags: `--state` the document, repeatable `--ask
+'id|type|instructions|options…'` (types `noul`, `choice`, `score`), or
+`--json request.json` for a raw SystemOne body (`-` reads stdin).
+
 ## License
 
 MIT. llama.cpp is MIT (ggml-org); Qwen3 weights are Apache-2.0 (Qwen);
-Qwen2.5-VL is Apache-2.0; Ultravox/Llama-3.2 under their model licenses.
+Qwen2.5-VL is Apache-2.0; Ultravox/Llama-3.2 under their model licenses;
+kev is Apache-2.0 (jaredpalmer).

@@ -44,6 +44,7 @@ Use models:
   hear     Ask an audio model about a take — transcribes by default
   test     Load the model, run a prompt, report speed
   bench    llama-bench on the weights (pp/tg table)
+  judge    Ask a kev decision model typed questions (TypeSafe API)
 
 Run models:
   run      Serve a model on loopback; registers with Earshot. Ctrl-C stops
@@ -85,6 +86,8 @@ func main() {
 		err = cmdTest(ctx, os.Args[2:])
 	case "bench":
 		err = cmdBench(ctx, os.Args[2:])
+	case "judge":
+		err = cmdJudge(ctx, os.Args[2:])
 	case "run":
 		err = cmdRun(ctx, os.Args[2:])
 	case "ps":
@@ -122,12 +125,12 @@ func cmdList() error {
 		default:
 			status = "—"
 		}
-		fitLabel := modelFit(spec.totalBytes(), memory).String()
-		if modelFit(spec.totalBytes(), memory) == fitWont {
-			fitLabel = "needs " + humanSize(neededBytes(spec.totalBytes())) + "+"
+		fitLabel := modelFit(spec.sizeBytes(), memory).String()
+		if modelFit(spec.sizeBytes(), memory) == fitWont {
+			fitLabel = "needs " + humanSize(neededBytes(spec.sizeBytes())) + "+"
 		}
 		fmt.Printf("%-16s %-7s %-9s %-22s %-12s %s\n",
-			spec.id, spec.kind, humanSize(spec.totalBytes()), spec.name, fitLabel, status)
+			spec.id, spec.kind, humanSize(spec.sizeBytes()), spec.name, fitLabel, status)
 		fmt.Printf("%33s %s\n", "", spec.summary)
 	}
 	engineState := "unsupported platform"
@@ -157,6 +160,12 @@ func resolve(id string) (*modelSpec, *engineSpec, error) {
 	if spec == nil {
 		return nil, nil, unknownModel(id)
 	}
+	if spec.rt == runtimeKev {
+		if runtime.GOOS == "windows" {
+			return nil, nil, fmt.Errorf("kev models need macOS or Linux (torch MPS/CUDA)")
+		}
+		return spec, nil, nil
+	}
 	eng := engine()
 	if eng == nil {
 		return nil, nil, fmt.Errorf("earshot-local does not have a pinned llama.cpp for %s/%s yet", runtime.GOOS, runtime.GOARCH)
@@ -169,12 +178,18 @@ func pull(ctx context.Context, spec *modelSpec, eng *engineSpec) error {
 	if err := protectDir(root); err != nil {
 		return err
 	}
-	if !engineInstalled(root, eng) {
+	if spec.rt == runtimeLlama && !engineInstalled(root, eng) {
 		bar := newProgress("engine", eng.bytes)
 		if err := ensureEngine(ctx, root, eng, bar.set); err != nil {
 			return err
 		}
 		fmt.Fprintf(os.Stderr, "engine llama.cpp %s installed\n", engineVersion)
+	}
+	if spec.rt == runtimeKev {
+		bar := newProgress("kev runtime", kevSource.bytes)
+		if err := ensureKevRuntime(ctx, root, bar.set); err != nil {
+			return err
+		}
 	}
 	if modelInstalled(root, spec) {
 		fmt.Printf("%s already installed\n", spec.id)
@@ -211,6 +226,9 @@ func cmdAsk(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if spec.rt == runtimeKev {
+		return fmt.Errorf("%s answers typed questions, not prompts — use `earshot-local judge %s`", spec.id, spec.id)
+	}
 	prompt := strings.Join(rest, " ")
 	if prompt == "" {
 		data, err := io.ReadAll(os.Stdin)
@@ -229,6 +247,9 @@ func cmdChat(ctx context.Context, args []string) error {
 	spec, eng, _, err := modelArgs("chat", args, "")
 	if err != nil {
 		return err
+	}
+	if spec.rt == runtimeKev {
+		return fmt.Errorf("%s answers typed questions, not chat — use `earshot-local judge %s`", spec.id, spec.id)
 	}
 	return runChat(ctx, spec, eng)
 }
@@ -268,6 +289,9 @@ func cmdTest(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if spec.rt == runtimeKev {
+		return runKevTest(ctx, spec)
+	}
 	return runTest(ctx, spec, eng)
 }
 
@@ -276,7 +300,60 @@ func cmdBench(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if spec.rt == runtimeKev {
+		return runKevBench(ctx, spec, 5)
+	}
 	return runBench(ctx, spec, eng)
+}
+
+// Repeatable --ask flag for `judge`.
+type askFlags []string
+
+func (f *askFlags) String() string { return "" }
+func (f *askFlags) Set(v string) error {
+	*f = append(*f, v)
+	return nil
+}
+
+func cmdJudge(ctx context.Context, args []string) error {
+	set := flag.NewFlagSet("judge", flag.ExitOnError)
+	state := set.String("state", "", "the document the questions judge")
+	jsonPath := set.String("json", "", "a raw SystemOne request file ('-' reads stdin)")
+	var asks askFlags
+	set.Var(&asks, "ask", "typed question: 'id|noul|instructions' or 'id|choice|instructions|opt1|opt2…' (repeatable)")
+	set.Usage = func() {
+		fmt.Fprintln(os.Stderr, `usage: earshot-local judge <model> --state "text" --ask 'id|type|instructions[|opts…]' [--ask …]
+       earshot-local judge <model> --json request.json   ('-' reads stdin)
+
+examples:
+  earshot-local judge kev-4b --state "my order never arrived and I was charged twice" \
+    --ask 'escalate|noul|Needs urgent human attention?' \
+    --ask 'team|choice|Which team?|returns|shipping|billing' \
+    --ask 'mood|score|How upset?|calm|frustrated|angry'`)
+	}
+	// `judge <model> --flags…` reads naturally; flag.Parse needs flags first.
+	var id string
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		id, args = args[0], args[1:]
+	}
+	set.Parse(args)
+	if id == "" && set.NArg() > 0 {
+		id = set.Arg(0)
+	}
+	if id == "" {
+		return fmt.Errorf("usage: earshot-local judge <model> [--state …] [--ask …|--json …]")
+	}
+	spec, _, err := resolve(id)
+	if err != nil {
+		return err
+	}
+	if spec.rt != runtimeKev {
+		return fmt.Errorf("%s chats, it does not judge — `judge` is for kev models", spec.id)
+	}
+	if *jsonPath == "" && *state == "" {
+		return fmt.Errorf("nothing to judge — pass --state \"text\" or --json request.json")
+	}
+	return runJudge(ctx, spec, *state, asks, *jsonPath)
 }
 
 func cmdClean(args []string) error {
@@ -317,29 +394,45 @@ func cmdRun(ctx context.Context, args []string) error {
 	if err := rehash(root, spec); err != nil {
 		return err
 	}
-	key, err := ensureKey(root)
-	if err != nil {
-		return err
-	}
 	if err := portFree(servePort); err != nil {
 		return err
 	}
-	cmd, err := spawnServer(root, eng, spec, servePort, *ctxSize, "")
+	var cmd *exec.Cmd
+	var key string
+	if spec.rt == runtimeKev {
+		cmd, err = spawnKev(root, spec, servePort, "")
+	} else {
+		key, err = ensureKey(root)
+		if err != nil {
+			return err
+		}
+		cmd, err = spawnServer(root, eng, spec, servePort, *ctxSize, "")
+	}
 	if err != nil {
 		return err
 	}
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
-	if err := waitReady(ctx, exited, servePort, spec.id, key); err != nil {
+	if spec.rt == runtimeKev {
+		err = waitReady(ctx, exited, servePort, kevAlias, "", false)
+	} else {
+		err = waitReady(ctx, exited, servePort, spec.id, key, true)
+	}
+	if err != nil {
 		killAndReap(cmd, exited)
 		return err
 	}
 	url := endpointURL(servePort)
-	fmt.Printf("\n%s is serving at %s\n", spec.name, url)
-	if *noConnect {
-		fmt.Println(pasteBlock(url, key, spec.id))
+	if spec.rt == runtimeKev {
+		fmt.Printf("\n%s is serving the TypeSafe API at %s\n", spec.name, url)
+		fmt.Println(kevBlock(url))
 	} else {
-		reportConnect(url, key, spec.id)
+		fmt.Printf("\n%s is serving at %s\n", spec.name, url)
+		if *noConnect {
+			fmt.Println(pasteBlock(url, key, spec.id))
+		} else {
+			reportConnect(url, key, spec.id)
+		}
 	}
 	fmt.Println("\nctrl-c to stop")
 	select {
@@ -372,6 +465,17 @@ func cmdConnect(args []string) error {
 	if spec == nil {
 		return unknownModel(set.Arg(0))
 	}
+	servePort := spec.port
+	if *port != 0 {
+		servePort = *port
+	}
+	if spec.rt == runtimeKev {
+		if contains(servedModels(servePort, ""), kevAlias) {
+			fmt.Println(kevBlock(endpointURL(servePort)))
+			return nil
+		}
+		return fmt.Errorf("nothing is answering on 127.0.0.1:%d — is `%s` running?", servePort, spec.id)
+	}
 	root := home()
 	cfg, err := loadConfig(root)
 	if err != nil {
@@ -379,10 +483,6 @@ func cmdConnect(args []string) error {
 	}
 	if cfg.APIKey == "" {
 		return fmt.Errorf("no server key yet — run `earshot-local run %s` once first", spec.id)
-	}
-	servePort := spec.port
-	if *port != 0 {
-		servePort = *port
 	}
 	served := servedModels(servePort, cfg.APIKey)
 	switch {
@@ -452,6 +552,15 @@ func cmdDoctor() error {
 		fmt.Printf("engine:   llama.cpp %s (%s)\n", engineVersion, state)
 	} else {
 		fmt.Println("engine:   no pinned llama.cpp for this platform")
+	}
+	if runtime.GOOS == "windows" {
+		fmt.Println("kev:      needs macOS or Linux")
+	} else if _, err := exec.LookPath("uv"); err != nil {
+		fmt.Println("kev:      `uv` not installed (needed to build its python env)")
+	} else if kevRuntimeReady(root) {
+		fmt.Println("kev:      runtime installed")
+	} else {
+		fmt.Println("kev:      runtime not built yet (first kev command builds it)")
 	}
 	cfg, cfgErr := loadConfig(root)
 	key := "not yet"

@@ -74,7 +74,8 @@ func endpointURL(port int) string {
 }
 
 // A model is installed when every pinned file is present at its byte count
-// and the receipt lists the matching digests.
+// and the receipt lists the matching digests. kev models keep their verified
+// tarball and the checkpoint it unpacks to.
 func modelInstalled(root string, spec *modelSpec) bool {
 	dir := modelDir(root, spec)
 	for _, pin := range spec.files() {
@@ -82,6 +83,9 @@ func modelInstalled(root string, spec *modelSpec) bool {
 		if err != nil || info.Size() != pin.bytes {
 			return false
 		}
+	}
+	if spec.rt == runtimeKev && kevCkptDir(root, spec) == "" {
+		return false
 	}
 	return readReceipt(filepath.Join(dir, receipt), spec)
 }

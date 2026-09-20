@@ -27,6 +27,9 @@ const (
 // Download every artifact a model needs, verify each, promote into place.
 // Resumable: a `.part` keeps its bytes between runs.
 func ensureModel(ctx context.Context, root string, spec *modelSpec, progress func(int64)) error {
+	if spec.rt == runtimeKev {
+		return ensureKevModel(ctx, root, spec, progress)
+	}
 	for _, pin := range spec.files() {
 		installed := fileInstalled(root, spec, pin)
 		if installed {
@@ -83,6 +86,52 @@ func promote(root string, spec *modelSpec, pin *filePin, part string) error {
 		return fmt.Errorf("could not install model: %w", err)
 	}
 	return nil
+}
+
+// The kev checkpoint: fetch the verified tarball, keep it (re-hash before
+// every spawn reads it), unpack the kev-<name>/ dir it contains.
+func ensureKevModel(ctx context.Context, root string, spec *modelSpec, progress func(int64)) error {
+	pin := &spec.model
+	if !fileInstalled(root, spec, pin) {
+		part, err := prepareCandidate(root, spec, pin)
+		if err != nil {
+			return err
+		}
+		if err := fetch(ctx, spec.url(pin), pin.bytes, part, progress); err != nil {
+			return err
+		}
+		if err := verify(part, pin.bytes, pin.sha256); err != nil {
+			return err
+		}
+		if err := promote(root, spec, pin, part); err != nil {
+			return err
+		}
+	}
+	progress(pin.bytes)
+	if kevCkptDir(root, spec) != "" {
+		return writeReceipt(modelDir(root, spec), spec)
+	}
+	staging, err := os.MkdirTemp(root, ".ckpt-")
+	if err != nil {
+		return fmt.Errorf("could not stage the checkpoint: %w", err)
+	}
+	defer os.RemoveAll(staging)
+	if err := unpackTarGz(filePath(root, spec, pin), staging); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(staging)
+	if err != nil || len(entries) != 1 || !entries[0].IsDir() {
+		return fmt.Errorf("the kev checkpoint archive has an unexpected layout")
+	}
+	if _, err := os.Stat(filepath.Join(staging, entries[0].Name(), "head.pt")); err != nil {
+		return fmt.Errorf("the kev checkpoint archive is missing head.pt")
+	}
+	dest := filepath.Join(modelDir(root, spec), entries[0].Name())
+	os.RemoveAll(dest)
+	if err := os.Rename(filepath.Join(staging, entries[0].Name()), dest); err != nil {
+		return fmt.Errorf("could not install the checkpoint: %w", err)
+	}
+	return writeReceipt(modelDir(root, spec), spec)
 }
 
 // Re-hash every pinned file before each spawn: the install receipt cannot
@@ -156,7 +205,8 @@ func spawnServer(root string, eng *engineSpec, spec *modelSpec, port int, ctxSiz
 }
 
 // Poll `/health` and `/v1/models` until the model is genuinely answering.
-func waitReady(ctx context.Context, exited <-chan error, port int, alias, key string) error {
+// kev has no /health — passes probeHealth=false and lists instead.
+func waitReady(ctx context.Context, exited <-chan error, port int, alias, key string, probeHealth bool) error {
 	client := &http.Client{
 		Timeout:   3 * time.Second,
 		Transport: &http.Transport{Proxy: nil},
@@ -166,7 +216,7 @@ func waitReady(ctx context.Context, exited <-chan error, port int, alias, key st
 	for {
 		select {
 		case status := <-exited:
-			return fmt.Errorf("llama-server exited before it was ready (%v)", status)
+			return fmt.Errorf("the model server exited before it was ready (%v)", status)
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
@@ -174,28 +224,57 @@ func waitReady(ctx context.Context, exited <-chan error, port int, alias, key st
 		if time.Since(started) >= loadTimeout {
 			return fmt.Errorf("the model did not load within %d minutes", int(loadTimeout.Minutes()))
 		}
-		health := authenticatedGet(client, root+"/health", key)
-		listed := false
-		if models := authenticatedGet(client, root+"/v1/models", key); models != nil {
-			if data, ok := models["data"].([]any); ok {
-				for _, row := range data {
-					if obj, ok := row.(map[string]any); ok && obj["id"] == alias {
-						listed = true
-					}
-				}
+		healthy := !probeHealth
+		if probeHealth {
+			if health := authenticatedGet(client, root+"/health", key); health != nil {
+				healthy = health["status"] == "ok"
 			}
 		}
-		if health != nil && health["status"] == "ok" && listed {
+		listed := contains(servedIDs(client, fmt.Sprintf("http://127.0.0.1:%d", port), key), alias)
+		if healthy && listed {
 			return nil
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case status := <-exited:
-			return fmt.Errorf("llama-server exited before it was ready (%v)", status)
+			return fmt.Errorf("the model server exited before it was ready (%v)", status)
 		case <-time.After(readyPoll):
 		}
 	}
+}
+
+// Model ids a server advertises, whichever listing shape it speaks:
+// OpenAI `{"data":[{id}]}`, or kev `{"models":[{id, aliases}]}`.
+func servedIDs(client *http.Client, base, key string) []string {
+	models := authenticatedGet(client, base+"/v1/models", key)
+	if models == nil {
+		return nil
+	}
+	var ids []string
+	collect := func(rows any) {
+		if list, ok := rows.([]any); ok {
+			for _, row := range list {
+				obj, ok := row.(map[string]any)
+				if !ok {
+					continue
+				}
+				if id, ok := obj["id"].(string); ok {
+					ids = append(ids, id)
+				}
+				if aliases, ok := obj["aliases"].([]any); ok {
+					for _, a := range aliases {
+						if s, ok := a.(string); ok {
+							ids = append(ids, s)
+						}
+					}
+				}
+			}
+		}
+	}
+	collect(models["data"])
+	collect(models["models"])
+	return ids
 }
 
 func authenticatedGet(client *http.Client, url, key string) map[string]any {
@@ -230,23 +309,7 @@ func servedModels(port int, key string) []string {
 		Timeout:   3 * time.Second,
 		Transport: &http.Transport{Proxy: nil},
 	}
-	models := authenticatedGet(client, fmt.Sprintf("http://127.0.0.1:%d/v1/models", port), key)
-	if models == nil {
-		return nil
-	}
-	data, ok := models["data"].([]any)
-	if !ok {
-		return nil
-	}
-	var ids []string
-	for _, row := range data {
-		if obj, ok := row.(map[string]any); ok {
-			if id, ok := obj["id"].(string); ok {
-				ids = append(ids, id)
-			}
-		}
-	}
-	return ids
+	return servedIDs(client, fmt.Sprintf("http://127.0.0.1:%d", port), key)
 }
 
 func portFree(port int) error {

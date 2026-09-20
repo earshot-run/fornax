@@ -25,6 +25,9 @@ func withServer(ctx context.Context, spec *modelSpec, eng *engineSpec, fn func(u
 	if err := pull(ctx, spec, eng); err != nil {
 		return err
 	}
+	if spec.rt == runtimeKev {
+		return withKev(ctx, root, spec, fn)
+	}
 	if err := rehash(root, spec); err != nil {
 		return err
 	}
@@ -48,10 +51,42 @@ func withServer(ctx context.Context, spec *modelSpec, eng *engineSpec, fn func(u
 	go func() { exited <- cmd.Wait() }()
 	defer killAndReap(cmd, exited)
 	fmt.Fprintf(os.Stderr, "starting %s…\n", spec.id)
-	if err := waitReady(ctx, exited, port, spec.id, key); err != nil {
+	if err := waitReady(ctx, exited, port, spec.id, key, true); err != nil {
 		return fmt.Errorf("%w — server log: %s", err, logPath)
 	}
 	return fn(endpointURL(port), key)
+}
+
+// The kev path through withServer: python env first, then kev.serve.
+// kev speaks /v1/systemone, not chat completions — no API key either.
+func withKev(ctx context.Context, root string, spec *modelSpec, fn func(url, key string) error) error {
+	bar := newProgress("kev runtime", kevSource.bytes)
+	if err := ensureKevRuntime(ctx, root, bar.set); err != nil {
+		return err
+	}
+	if err := rehash(root, spec); err != nil {
+		return err
+	}
+	if contains(servedModels(spec.port, ""), kevAlias) {
+		return fn(endpointURL(spec.port), "")
+	}
+	port, err := freePort(scratchPortBase)
+	if err != nil {
+		return err
+	}
+	logPath := filepath.Join(root, "server.log")
+	cmd, err := spawnKev(root, spec, port, logPath)
+	if err != nil {
+		return err
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+	defer killAndReap(cmd, exited)
+	fmt.Fprintf(os.Stderr, "starting %s (first run downloads the base model)…\n", spec.id)
+	if err := waitReady(ctx, exited, port, kevAlias, "", false); err != nil {
+		return fmt.Errorf("%w — server log: %s", err, logPath)
+	}
+	return fn(endpointURL(port), "")
 }
 
 // One prompt, one streamed reply. The prompt comes from the args or stdin.
@@ -286,10 +321,11 @@ func runClean(all bool) error {
 				}
 			}
 		}
-		engDir := filepath.Join(root, "engine")
-		freed += dirSize(engDir)
-		if err := os.RemoveAll(engDir); err == nil {
-			removed = append(removed, engDir+"/")
+		for _, dir := range []string{filepath.Join(root, "engine"), kevRoot(root)} {
+			freed += dirSize(dir)
+			if err := os.RemoveAll(dir); err == nil {
+				removed = append(removed, dir+"/")
+			}
 		}
 	}
 	if len(removed) == 0 {

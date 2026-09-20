@@ -81,11 +81,11 @@ func installEngine(root string, spec *engineSpec, archive string) error {
 // An archive entry must stay inside the staging dir: plain relative names only.
 func safeRelative(name string) error {
 	if name == "" || filepath.IsAbs(name) {
-		return fmt.Errorf("the llama.cpp archive contains an unsafe path: %s", name)
+		return fmt.Errorf("the archive contains an unsafe path: %s", name)
 	}
 	for _, part := range strings.Split(filepath.ToSlash(name), "/") {
 		if part == ".." {
-			return fmt.Errorf("the llama.cpp archive contains an unsafe path: %s", name)
+			return fmt.Errorf("the archive contains an unsafe path: %s", name)
 		}
 	}
 	return nil
@@ -94,12 +94,12 @@ func safeRelative(name string) error {
 func unpackTarGz(archive, into string) error {
 	file, err := os.Open(archive)
 	if err != nil {
-		return fmt.Errorf("could not open llama.cpp archive: %w", err)
+		return fmt.Errorf("could not open the archive: %w", err)
 	}
 	defer file.Close()
 	gz, err := gzip.NewReader(file)
 	if err != nil {
-		return fmt.Errorf("could not read llama.cpp archive: %w", err)
+		return fmt.Errorf("could not read the archive: %w", err)
 	}
 	defer gz.Close()
 	reader := tar.NewReader(gz)
@@ -107,35 +107,42 @@ func unpackTarGz(archive, into string) error {
 	var total int64
 	for index := 0; ; index++ {
 		if index >= maxEngineEntries {
-			return fmt.Errorf("the llama.cpp archive has too many entries")
+			return fmt.Errorf("the archive has too many entries")
 		}
 		header, err := reader.Next()
 		if err == io.EOF {
 			return nil
 		}
 		if err != nil {
-			return fmt.Errorf("could not read llama.cpp archive: %w", err)
+			return fmt.Errorf("could not read the archive: %w", err)
+		}
+		if header.Typeflag == tar.TypeXGlobalHeader || header.Typeflag == tar.TypeXHeader {
+			continue
+		}
+		// macOS tars bake in AppleDouble sidecars; they are never content.
+		if strings.HasPrefix(filepath.Base(header.Name), "._") {
+			continue
 		}
 		if err := safeRelative(header.Name); err != nil {
 			return err
 		}
 		if seen[header.Name] {
-			return fmt.Errorf("the llama.cpp archive repeats a path: %s", header.Name)
+			return fmt.Errorf("the archive repeats a path: %s", header.Name)
 		}
 		seen[header.Name] = true
 		destination := filepath.Join(into, filepath.FromSlash(header.Name))
 		switch header.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(destination, 0o755); err != nil {
-				return fmt.Errorf("could not unpack llama.cpp: %w", err)
+				return fmt.Errorf("could not unpack: %w", err)
 			}
 		case tar.TypeReg:
 			total += header.Size
 			if total > maxEngineExpanded {
-				return fmt.Errorf("the llama.cpp archive expands too large")
+				return fmt.Errorf("the archive expands too large")
 			}
 			if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
-				return fmt.Errorf("could not unpack llama.cpp: %w", err)
+				return fmt.Errorf("could not unpack: %w", err)
 			}
 			mode := os.FileMode(header.Mode) & 0o777
 			if mode == 0 {
@@ -149,13 +156,13 @@ func unpackTarGz(archive, into string) error {
 				return err
 			}
 			if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
-				return fmt.Errorf("could not unpack llama.cpp: %w", err)
+				return fmt.Errorf("could not unpack: %w", err)
 			}
 			if err := os.Symlink(header.Linkname, destination); err != nil {
-				return fmt.Errorf("could not unpack llama.cpp link: %w", err)
+				return fmt.Errorf("could not unpack link: %w", err)
 			}
 		default:
-			return fmt.Errorf("the llama.cpp archive contains an unsupported entry")
+			return fmt.Errorf("the archive contains an unsupported entry")
 		}
 	}
 }
@@ -163,35 +170,38 @@ func unpackTarGz(archive, into string) error {
 func unpackZip(archive, into string) error {
 	reader, err := zip.OpenReader(archive)
 	if err != nil {
-		return fmt.Errorf("could not read llama.cpp archive: %w", err)
+		return fmt.Errorf("could not read the archive: %w", err)
 	}
 	defer reader.Close()
 	if len(reader.File) > maxEngineEntries {
-		return fmt.Errorf("the llama.cpp archive has too many entries")
+		return fmt.Errorf("the archive has too many entries")
 	}
 	seen := map[string]bool{}
 	var total int64
 	for _, entry := range reader.File {
+		if strings.HasPrefix(filepath.Base(entry.Name), "._") || strings.Contains(entry.Name, "__MACOSX/") {
+			continue
+		}
 		if err := safeRelative(entry.Name); err != nil {
 			return err
 		}
 		if seen[entry.Name] {
-			return fmt.Errorf("the llama.cpp archive repeats a path: %s", entry.Name)
+			return fmt.Errorf("the archive repeats a path: %s", entry.Name)
 		}
 		seen[entry.Name] = true
 		destination := filepath.Join(into, filepath.FromSlash(entry.Name))
 		if entry.FileInfo().IsDir() {
 			if err := os.MkdirAll(destination, 0o755); err != nil {
-				return fmt.Errorf("could not unpack llama.cpp: %w", err)
+				return fmt.Errorf("could not unpack: %w", err)
 			}
 			continue
 		}
 		total += int64(entry.UncompressedSize64)
 		if total > maxEngineExpanded {
-			return fmt.Errorf("the llama.cpp archive expands too large")
+			return fmt.Errorf("the archive expands too large")
 		}
 		if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
-			return fmt.Errorf("could not unpack llama.cpp: %w", err)
+			return fmt.Errorf("could not unpack: %w", err)
 		}
 		mode := entry.Mode() & 0o777
 		if mode == 0 {
@@ -199,7 +209,7 @@ func unpackZip(archive, into string) error {
 		}
 		source, err := entry.Open()
 		if err != nil {
-			return fmt.Errorf("could not unpack llama.cpp: %w", err)
+			return fmt.Errorf("could not unpack: %w", err)
 		}
 		err = writeEntry(source, destination, mode, int64(entry.UncompressedSize64))
 		source.Close()
@@ -213,16 +223,16 @@ func unpackZip(archive, into string) error {
 func writeEntry(source io.Reader, destination string, mode os.FileMode, size int64) error {
 	output, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
-		return fmt.Errorf("could not unpack llama.cpp: %w", err)
+		return fmt.Errorf("could not unpack: %w", err)
 	}
 	copied, err := io.Copy(output, source)
 	if err != nil {
 		output.Close()
-		return fmt.Errorf("could not unpack llama.cpp: %w", err)
+		return fmt.Errorf("could not unpack: %w", err)
 	}
 	if copied != size {
 		output.Close()
-		return fmt.Errorf("the llama.cpp archive ended early")
+		return fmt.Errorf("the archive ended early")
 	}
 	if err := output.Sync(); err != nil {
 		output.Close()
