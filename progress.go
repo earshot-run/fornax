@@ -27,6 +27,10 @@ func (p *progressBar) set(done int64) {
 	}
 	p.last = now
 	elapsed := now.Sub(p.started).Seconds()
+	if done >= p.total && elapsed < 1 {
+		fmt.Fprintf(os.Stderr, "%-12s %6s — done\n", p.label, humanSize(done))
+		return
+	}
 	var rate float64
 	if elapsed > 0 {
 		rate = float64(done) / elapsed

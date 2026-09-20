@@ -252,6 +252,11 @@ func servedIDs(client *http.Client, base, key string) []string {
 		return nil
 	}
 	var ids []string
+	add := func(s string) {
+		if s != "" && !contains(ids, s) {
+			ids = append(ids, s)
+		}
+	}
 	collect := func(rows any) {
 		if list, ok := rows.([]any); ok {
 			for _, row := range list {
@@ -259,13 +264,15 @@ func servedIDs(client *http.Client, base, key string) []string {
 				if !ok {
 					continue
 				}
-				if id, ok := obj["id"].(string); ok {
-					ids = append(ids, id)
+				for _, field := range []string{"id", "name", "model"} {
+					if v, ok := obj[field].(string); ok {
+						add(v)
+					}
 				}
 				if aliases, ok := obj["aliases"].([]any); ok {
 					for _, a := range aliases {
 						if s, ok := a.(string); ok {
-							ids = append(ids, s)
+							add(s)
 						}
 					}
 				}

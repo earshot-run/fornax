@@ -146,6 +146,7 @@ func verify(path string, expectedBytes int64, expectedSHA string) error {
 		return fmt.Errorf("could not read downloaded artifact: %w", err)
 	}
 	if info.Size() != expectedBytes {
+		os.Remove(path)
 		return fmt.Errorf("the downloaded artifact had the wrong size")
 	}
 	file, err := os.Open(path)

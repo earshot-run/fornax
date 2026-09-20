@@ -112,9 +112,15 @@ func chatStream(ctx context.Context, url, key, model string, messages []message,
 					Content string `json:"content"`
 				} `json:"delta"`
 			} `json:"choices"`
+			Error *struct {
+				Message string `json:"message"`
+			} `json:"error"`
 		}
 		if json.Unmarshal([]byte(data), &chunk) != nil {
 			continue
+		}
+		if chunk.Error != nil {
+			return nil, fmt.Errorf("the model server failed: %s", chunk.Error.Message)
 		}
 		for _, choice := range chunk.Choices {
 			if choice.Delta.Content != "" {

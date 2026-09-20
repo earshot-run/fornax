@@ -87,6 +87,12 @@ func ensureKevRuntime(ctx context.Context, root string, progress func(int64)) er
 	}
 	part := kevSrcPart(root)
 	final := kevSrcFinal(root)
+	// A tarball left from a previous run still has to match the pin.
+	if _, err := os.Stat(final); err == nil {
+		if err := verify(final, kevSource.bytes, kevSource.sha256); err != nil {
+			os.Remove(final)
+		}
+	}
 	if _, err := os.Stat(final); os.IsNotExist(err) {
 		if info, err := os.Stat(part); err == nil && info.Size() > kevSource.bytes {
 			os.Remove(part)
@@ -148,7 +154,11 @@ func inheritEnv() []string {
 	if tmp := os.Getenv("TMPDIR"); tmp != "" {
 		env = append(env, "TMPDIR="+tmp)
 	}
-	for _, key := range []string{"HF_HOME", "HF_TOKEN", "UV_PYTHON", "UV_CACHE_DIR"} {
+	for _, key := range []string{
+		"HF_HOME", "HF_TOKEN", "UV_PYTHON", "UV_CACHE_DIR",
+		"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+		"http_proxy", "https_proxy", "all_proxy", "no_proxy",
+	} {
 		if v := os.Getenv(key); v != "" {
 			env = append(env, key+"="+v)
 		}
@@ -257,11 +267,15 @@ func printKevAnswers(reply map[string]any, order []string) {
 		}
 		switch a["type"] {
 		case "noul":
-			fmt.Printf("  %-14s noul %.2f\n", id+":", a["noul"])
+			if v, ok := a["noul"].(float64); ok {
+				fmt.Printf("  %-14s noul %.2f\n", id+":", v)
+			}
 		case "choice":
 			fmt.Printf("  %-14s choice %q — %s\n", id+":", a["choice"], probList(a))
 		case "score":
-			fmt.Printf("  %-14s score %.2f — %s\n", id+":", a["score"], probList(a))
+			if v, ok := a["score"].(float64); ok {
+				fmt.Printf("  %-14s score %.2f — %s\n", id+":", v, probList(a))
+			}
 		}
 	}
 	if ms, ok := reply["latency_ms"].(float64); ok {
@@ -352,20 +366,51 @@ func runKevBench(ctx context.Context, spec *modelSpec, runs int) error {
 
 // `judge` — ask a live kev model typed questions about a piece of state.
 // --ask 'id|type|instructions|opt1|opt2|…'  (repeatable; noul takes no options)
-// or --json <file|-> for a raw SystemOne request body.
+// or --json <file|-> for a raw SystemOne request body. Input is validated and
+// read before any server work so a bad flag fails fast.
 func runJudge(ctx context.Context, spec *modelSpec, state string, asks []string, jsonPath string) error {
+	var raw []byte
+	var questions map[string]*kevQuestion
+	var order []string
+	if jsonPath != "" {
+		var err error
+		if jsonPath == "-" {
+			raw, err = io.ReadAll(os.Stdin)
+		} else {
+			raw, err = os.ReadFile(jsonPath)
+		}
+		if err != nil {
+			return err
+		}
+	} else {
+		questions = map[string]*kevQuestion{}
+		for _, ask := range asks {
+			parts := strings.Split(ask, "|")
+			if len(parts) < 3 {
+				return fmt.Errorf("--ask %q needs id|type|instructions[|options…]", ask)
+			}
+			q := &kevQuestion{Kind: parts[1], Instructions: parts[2], Options: parts[3:]}
+			switch q.Kind {
+			case "noul":
+				if len(q.Options) > 0 {
+					return fmt.Errorf("--ask %q: noul takes no options", ask)
+				}
+			case "choice", "score":
+				if len(q.Options) < 2 {
+					return fmt.Errorf("--ask %q: %s needs at least two options", ask, q.Kind)
+				}
+			default:
+				return fmt.Errorf("--ask %q: type must be noul, choice or score", ask)
+			}
+			questions[parts[0]] = q
+			order = append(order, parts[0])
+		}
+		if len(questions) == 0 {
+			return fmt.Errorf("no questions — pass --ask 'id|noul|instructions' (or --json)")
+		}
+	}
 	return withServer(ctx, spec, nil, func(url, _ string) error {
 		if jsonPath != "" {
-			var raw []byte
-			var err error
-			if jsonPath == "-" {
-				raw, err = io.ReadAll(os.Stdin)
-			} else {
-				raw, err = os.ReadFile(jsonPath)
-			}
-			if err != nil {
-				return err
-			}
 			resp, err := post(ctx, url+"/systemone", "", raw)
 			if err != nil {
 				return err
@@ -380,29 +425,6 @@ func runJudge(ctx context.Context, spec *modelSpec, state string, asks []string,
 			}
 			printKevAnswers(parsed, nil)
 			return nil
-		}
-		questions := map[string]*kevQuestion{}
-		var order []string
-		for _, ask := range asks {
-			parts := strings.Split(ask, "|")
-			if len(parts) < 3 {
-				return fmt.Errorf("--ask %q needs id|type|instructions[|options…]", ask)
-			}
-			q := &kevQuestion{Kind: parts[1], Instructions: parts[2], Options: parts[3:]}
-			switch q.Kind {
-			case "noul":
-			case "choice", "score":
-				if len(q.Options) < 2 {
-					return fmt.Errorf("--ask %q: %s needs at least two options", ask, q.Kind)
-				}
-			default:
-				return fmt.Errorf("--ask %q: type must be noul, choice or score", ask)
-			}
-			questions[parts[0]] = q
-			order = append(order, parts[0])
-		}
-		if len(questions) == 0 {
-			return fmt.Errorf("no questions — pass --ask 'id|noul|instructions' (or --json)")
 		}
 		reply, err := kevSystemOne(ctx, url, state, questions)
 		if err != nil {

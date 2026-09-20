@@ -26,7 +26,7 @@ and starts a loopback server if one isn't already running.
 | `fornax list` | Catalog: sizes, modality, fit on this machine, what is installed |
 | `fornax pull <model>` | Download a model; resumes interrupted downloads |
 | `fornax rm <model>` | Delete a model's files and any partial download |
-| `fornax clean` | Remove interrupted downloads and stale staging (`-all` wipes everything) |
+| `fornax clean` | Remove interrupted downloads, stale staging and old server logs (`-all` wipes everything) |
 | `fornax doctor` | What this machine can run; engine, keys and Earshot status |
 
 **Use models**

@@ -28,15 +28,15 @@ func withServer(ctx context.Context, spec *modelSpec, eng *engineSpec, fn func(u
 	if spec.rt == runtimeKev {
 		return withKev(ctx, root, spec, fn)
 	}
-	if err := rehash(root, spec); err != nil {
-		return err
-	}
 	key, err := ensureKey(root)
 	if err != nil {
 		return err
 	}
 	if contains(servedModels(spec.port, key), spec.id) {
 		return fn(endpointURL(spec.port), key)
+	}
+	if err := rehash(root, spec); err != nil {
+		return err
 	}
 	port, err := freePort(scratchPortBase)
 	if err != nil {
@@ -60,15 +60,15 @@ func withServer(ctx context.Context, spec *modelSpec, eng *engineSpec, fn func(u
 // The kev path through withServer: python env first, then kev.serve.
 // kev speaks /v1/systemone, not chat completions — no API key either.
 func withKev(ctx context.Context, root string, spec *modelSpec, fn func(url, key string) error) error {
+	if contains(servedModels(spec.port, ""), kevAlias) {
+		return fn(endpointURL(spec.port), "")
+	}
 	bar := newProgress("kev runtime", kevSource.bytes)
 	if err := ensureKevRuntime(ctx, root, bar.set); err != nil {
 		return err
 	}
 	if err := rehash(root, spec); err != nil {
 		return err
-	}
-	if contains(servedModels(spec.port, ""), kevAlias) {
-		return fn(endpointURL(spec.port), "")
 	}
 	port, err := freePort(scratchPortBase)
 	if err != nil {
@@ -119,7 +119,9 @@ func runChat(ctx context.Context, spec *modelSpec, eng *engineSpec) error {
 				return err
 			}
 			line = strings.TrimSpace(line)
-			if err == io.EOF {
+			// A final line without a newline still gets answered; the next
+			// read hits EOF and leaves.
+			if err == io.EOF && line == "" {
 				fmt.Println()
 				return nil
 			}
@@ -162,10 +164,16 @@ func runSee(ctx context.Context, spec *modelSpec, eng *engineSpec, imagePath, qu
 				part,
 			},
 		}}
-		_, err := chatStream(ctx, url, key, spec.id, msgs, -1,
+		reply, err := chatStream(ctx, url, key, spec.id, msgs, -1,
 			func(token string) { fmt.Print(token) })
 		fmt.Println()
-		return err
+		if err != nil {
+			return err
+		}
+		if reply.Text == "" {
+			return fmt.Errorf("the model returned an empty reply")
+		}
+		return nil
 	})
 }
 
@@ -186,10 +194,16 @@ func runHear(ctx context.Context, spec *modelSpec, eng *engineSpec, audioPath, q
 				part,
 			},
 		}}
-		_, err := chatStream(ctx, url, key, spec.id, msgs, -1,
+		reply, err := chatStream(ctx, url, key, spec.id, msgs, -1,
 			func(token string) { fmt.Print(token) })
 		fmt.Println()
-		return err
+		if err != nil {
+			return err
+		}
+		if reply.Text == "" {
+			return fmt.Errorf("the model returned an empty reply")
+		}
+		return nil
 	})
 }
 
@@ -284,10 +298,20 @@ func runClean(all bool) error {
 		}
 	}
 	filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
+		if err != nil {
 			return nil
 		}
-		if !strings.HasSuffix(path, ".part") && !strings.HasSuffix(path, ".tmp-write") {
+		if info.IsDir() {
+			// Built runtimes are huge and never hold fornax's own .part files.
+			switch path {
+			case kevSrcDir(root), engineDir(root):
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		name := filepath.Base(path)
+		junk := strings.HasSuffix(name, ".part") || strings.HasSuffix(name, ".tmp-write") || name == "server.log"
+		if !junk {
 			return nil
 		}
 		// A file touched moments ago is probably a live download.
@@ -297,17 +321,27 @@ func runClean(all bool) error {
 		reap(path)
 		return nil
 	})
-	// Engine unpack staging dirs are `.engine-*` under home.
-	if entries, err := os.ReadDir(filepath.Join(root, "engine")); err == nil {
+	// Staging dirs a crashed pull left: `.engine-*`/`.ckpt-*` at home root
+	// and `kev/src.staging`. A dir touched moments ago is likely live.
+	for _, parent := range []string{root, kevRoot(root)} {
+		entries, err := os.ReadDir(parent)
+		if err != nil {
+			continue
+		}
 		for _, entry := range entries {
-			if entry.IsDir() && strings.HasPrefix(entry.Name(), ".engine-") {
-				dir := filepath.Join(root, "engine", entry.Name())
-				if size := dirSize(dir); size > 0 {
-					freed += size
-				}
-				if os.RemoveAll(dir) == nil {
-					removed = append(removed, dir+"/")
-				}
+			name := entry.Name()
+			staging := entry.IsDir() &&
+				(strings.HasPrefix(name, ".engine-") || strings.HasPrefix(name, ".ckpt-") || name == "src.staging")
+			if !staging {
+				continue
+			}
+			dir := filepath.Join(parent, name)
+			if time.Since(dirFresh(dir)) < 10*time.Second {
+				continue
+			}
+			freed += dirSize(dir)
+			if os.RemoveAll(dir) == nil {
+				removed = append(removed, dir+"/")
 			}
 		}
 	}
@@ -321,11 +355,19 @@ func runClean(all bool) error {
 				}
 			}
 		}
+		_, kevErr := os.Stat(kevRoot(root))
 		for _, dir := range []string{filepath.Join(root, "engine"), kevRoot(root)} {
 			freed += dirSize(dir)
+			if _, err := os.Stat(dir); err != nil {
+				continue
+			}
 			if err := os.RemoveAll(dir); err == nil {
 				removed = append(removed, dir+"/")
 			}
+		}
+		// The Qwen3 base lives in the shared HF cache — not ours to delete.
+		if kevErr == nil {
+			fmt.Println("note: the shared Hugging Face cache (~/.cache/huggingface) is left alone")
 		}
 	}
 	if len(removed) == 0 {
@@ -337,6 +379,19 @@ func runClean(all bool) error {
 	}
 	fmt.Printf("freed %s\n", humanSize(freed))
 	return nil
+}
+
+// The newest mtime anywhere in a tree — a staging dir being actively
+// unpacked keeps refreshing this.
+func dirFresh(dir string) time.Time {
+	fresh := time.Time{}
+	filepath.Walk(dir, func(_ string, info os.FileInfo, err error) error {
+		if err == nil && info.ModTime().After(fresh) {
+			fresh = info.ModTime()
+		}
+		return nil
+	})
+	return fresh
 }
 
 func dirSize(dir string) int64 {

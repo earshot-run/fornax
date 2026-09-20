@@ -392,7 +392,7 @@ func unknownModel(id string) error {
 	var near string
 	for _, spec := range models {
 		known = append(known, spec.id)
-		if strings.HasPrefix(spec.id, id) || strings.Contains(spec.id, id) {
+		if near == "" && (strings.HasPrefix(spec.id, id) || strings.Contains(spec.id, id)) {
 			near = spec.id
 		}
 	}

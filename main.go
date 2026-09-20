@@ -43,7 +43,7 @@ Use models:
   see      Ask a vision model about an image
   hear     Ask an audio model about a take — transcribes by default
   test     Load the model, run a prompt, report speed
-  bench    llama-bench on the weights (pp/tg table)
+  bench    llama-bench on the weights (kev: median request latency)
   judge    Ask a kev decision model typed questions (TypeSafe API)
 
 Run models:
@@ -192,14 +192,14 @@ func pull(ctx context.Context, spec *modelSpec, eng *engineSpec) error {
 		}
 	}
 	if modelInstalled(root, spec) {
-		fmt.Printf("%s already installed\n", spec.id)
+		fmt.Fprintf(os.Stderr, "%s already installed\n", spec.id)
 		return nil
 	}
 	bar := newProgress(spec.id, spec.totalBytes())
 	if err := ensureModel(ctx, root, spec, bar.set); err != nil {
 		return err
 	}
-	fmt.Printf("%s installed (%s)\n", spec.id, humanSize(spec.totalBytes()))
+	fmt.Fprintf(os.Stderr, "%s installed (%s)\n", spec.id, humanSize(spec.totalBytes()))
 	return nil
 }
 
@@ -231,6 +231,9 @@ func cmdAsk(ctx context.Context, args []string) error {
 	}
 	prompt := strings.Join(rest, " ")
 	if prompt == "" {
+		if info, err := os.Stdin.Stat(); err == nil && info.Mode()&os.ModeCharDevice != 0 {
+			return fmt.Errorf("usage: fornax ask <model> <prompt…>  (or pipe text on stdin)")
+		}
 		data, err := io.ReadAll(os.Stdin)
 		if err != nil {
 			return err
@@ -244,9 +247,12 @@ func cmdAsk(ctx context.Context, args []string) error {
 }
 
 func cmdChat(ctx context.Context, args []string) error {
-	spec, eng, _, err := modelArgs("chat", args, "")
+	spec, eng, rest, err := modelArgs("chat", args, "")
 	if err != nil {
 		return err
+	}
+	if len(rest) > 0 {
+		return fmt.Errorf("usage: fornax chat <model>  (it reads your replies once running)")
 	}
 	if spec.rt == runtimeKev {
 		return fmt.Errorf("%s answers typed questions, not chat — use `fornax judge %s`", spec.id, spec.id)
@@ -285,9 +291,12 @@ func cmdHear(ctx context.Context, args []string) error {
 }
 
 func cmdTest(ctx context.Context, args []string) error {
-	spec, eng, _, err := modelArgs("test", args, "")
+	spec, eng, rest, err := modelArgs("test", args, "")
 	if err != nil {
 		return err
+	}
+	if len(rest) > 0 {
+		return fmt.Errorf("usage: fornax test <model>")
 	}
 	if spec.rt == runtimeKev {
 		return runKevTest(ctx, spec)
@@ -296,9 +305,12 @@ func cmdTest(ctx context.Context, args []string) error {
 }
 
 func cmdBench(ctx context.Context, args []string) error {
-	spec, eng, _, err := modelArgs("bench", args, "")
+	spec, eng, rest, err := modelArgs("bench", args, "")
 	if err != nil {
 		return err
+	}
+	if len(rest) > 0 {
+		return fmt.Errorf("usage: fornax bench <model>")
 	}
 	if spec.rt == runtimeKev {
 		return runKevBench(ctx, spec, 5)
@@ -350,6 +362,9 @@ examples:
 	if spec.rt != runtimeKev {
 		return fmt.Errorf("%s chats, it does not judge — `judge` is for kev models", spec.id)
 	}
+	if *jsonPath != "" && (*state != "" || len(asks) > 0) {
+		return fmt.Errorf("--json is a complete request body — drop --state and --ask")
+	}
 	if *jsonPath == "" && *state == "" {
 		return fmt.Errorf("nothing to judge — pass --state \"text\" or --json request.json")
 	}
@@ -363,6 +378,9 @@ func cmdClean(args []string) error {
 		fmt.Fprintln(os.Stderr, "usage: fornax clean [-all]  — removes partial downloads and stale staging")
 	}
 	set.Parse(args)
+	if set.NArg() > 0 {
+		return fmt.Errorf("usage: fornax clean [-all]")
+	}
 	return runClean(*all)
 }
 
@@ -374,11 +392,22 @@ func cmdRun(ctx context.Context, args []string) error {
 	set.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: fornax run <model> [-port N] [-ctx-size N] [-no-connect]")
 	}
-	set.Parse(args)
-	if set.NArg() != 1 {
-		return fmt.Errorf("usage: fornax run <model>")
+	// `run <model> -flags` reads naturally; flag.Parse needs flags first.
+	var id string
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		id, args = args[0], args[1:]
 	}
-	spec, eng, err := resolve(set.Arg(0))
+	set.Parse(args)
+	if id == "" {
+		if set.NArg() == 1 {
+			id = set.Arg(0)
+		} else {
+			return fmt.Errorf("usage: fornax run <model> [-port N] [-ctx-size N] [-no-connect]")
+		}
+	} else if set.NArg() > 0 {
+		return fmt.Errorf("usage: fornax run <model> [-port N] [-ctx-size N] [-no-connect]")
+	}
+	spec, eng, err := resolve(id)
 	if err != nil {
 		return err
 	}
@@ -399,7 +428,15 @@ func cmdRun(ctx context.Context, args []string) error {
 	}
 	var cmd *exec.Cmd
 	var key string
+	serverName := "llama-server"
 	if spec.rt == runtimeKev {
+		serverName = "kev.serve"
+		if *ctxSize != contextWindow {
+			fmt.Fprintln(os.Stderr, "note: -ctx-size is ignored for kev models")
+		}
+		if *noConnect {
+			fmt.Fprintln(os.Stderr, "note: -no-connect is ignored for kev models (no Earshot route)")
+		}
 		cmd, err = spawnKev(root, spec, servePort, "")
 	} else {
 		key, err = ensureKey(root)
@@ -441,7 +478,7 @@ func cmdRun(ctx context.Context, args []string) error {
 		killAndReap(cmd, exited)
 		return nil
 	case status := <-exited:
-		return fmt.Errorf("llama-server exited: %v", status)
+		return fmt.Errorf("%s exited: %v", serverName, status)
 	}
 }
 
@@ -457,13 +494,23 @@ func cmdConnect(args []string) error {
 	set := flag.NewFlagSet("connect", flag.ExitOnError)
 	port := set.Int("port", 0, "loopback port the model is served on (default: the model's catalog port)")
 	set.Usage = func() { fmt.Fprintln(os.Stderr, "usage: fornax connect <model> [-port N]") }
-	set.Parse(args)
-	if set.NArg() != 1 {
-		return fmt.Errorf("usage: fornax connect <model>")
+	var id string
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		id, args = args[0], args[1:]
 	}
-	spec := model(set.Arg(0))
+	set.Parse(args)
+	if id == "" {
+		if set.NArg() == 1 {
+			id = set.Arg(0)
+		} else {
+			return fmt.Errorf("usage: fornax connect <model> [-port N]")
+		}
+	} else if set.NArg() > 0 {
+		return fmt.Errorf("usage: fornax connect <model> [-port N]")
+	}
+	spec := model(id)
 	if spec == nil {
-		return unknownModel(set.Arg(0))
+		return unknownModel(id)
 	}
 	servePort := spec.port
 	if *port != 0 {
@@ -535,6 +582,9 @@ func cmdRm(args []string) error {
 		return fmt.Errorf("could not remove %s: %w", spec.name, err)
 	}
 	fmt.Printf("%s removed\n", spec.id)
+	if spec.rt == runtimeKev {
+		fmt.Println("note: the shared Hugging Face cache (~/.cache/huggingface) is left alone")
+	}
 	return nil
 }
 
@@ -571,8 +621,12 @@ func cmdDoctor() error {
 	for i := range models {
 		spec := &models[i]
 		if modelInstalled(root, spec) {
+			alias, key := spec.id, cfg.APIKey
+			if spec.rt == runtimeKev {
+				alias, key = kevAlias, ""
+			}
 			serving := ""
-			if cfgErr == nil && contains(servedModels(spec.port, cfg.APIKey), spec.id) {
+			if cfgErr == nil && contains(servedModels(spec.port, key), alias) {
 				serving = ", serving"
 			}
 			fmt.Printf("model:    %s (%s) installed%s\n", spec.id, spec.kind, serving)
