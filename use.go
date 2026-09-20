@@ -262,7 +262,7 @@ func runPs() error {
 		}
 	}
 	if !any {
-		fmt.Println("nothing is serving — `earshot-local run <model>` starts one")
+		fmt.Println("nothing is serving — `fornax run <model>` starts one")
 	}
 	return nil
 }

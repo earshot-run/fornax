@@ -1,14 +1,14 @@
-# earshot-local
+# fornax
 
 A workbench for local models: download, run, talk to, see with, listen with,
 benchmark and clean up — one command at a time, on any machine. Connects to
 [Earshot](https://earshot.run) when it's there; fully useful when it isn't.
 
 ```sh
-earshot-local ask qwen3-4b "explain a doorbell in one sentence"
-earshot-local see qwen2.5-vl-3b screenshot.png "what does this UI say?"
-earshot-local hear ultravox-1b take.wav
-earshot-local judge kev-4b --state "charged twice, order never arrived" \
+fornax ask qwen3-4b "explain a doorbell in one sentence"
+fornax see qwen2.5-vl-3b screenshot.png "what does this UI say?"
+fornax hear ultravox-1b take.wav
+fornax judge kev-4b --state "charged twice, order never arrived" \
   --ask 'escalate|noul|Needs urgent human attention?' \
   --ask 'team|choice|Which team?|returns|shipping|billing'
 ```
@@ -23,31 +23,31 @@ and starts a loopback server if one isn't already running.
 
 | Command | What it does |
 | --- | --- |
-| `earshot-local list` | Catalog: sizes, modality, fit on this machine, what is installed |
-| `earshot-local pull <model>` | Download a model; resumes interrupted downloads |
-| `earshot-local rm <model>` | Delete a model's files and any partial download |
-| `earshot-local clean` | Remove interrupted downloads and stale staging (`-all` wipes everything) |
-| `earshot-local doctor` | What this machine can run; engine, keys and Earshot status |
+| `fornax list` | Catalog: sizes, modality, fit on this machine, what is installed |
+| `fornax pull <model>` | Download a model; resumes interrupted downloads |
+| `fornax rm <model>` | Delete a model's files and any partial download |
+| `fornax clean` | Remove interrupted downloads and stale staging (`-all` wipes everything) |
+| `fornax doctor` | What this machine can run; engine, keys and Earshot status |
 
 **Use models**
 
 | Command | What it does |
 | --- | --- |
-| `earshot-local ask <model> [prompt]` | One prompt, one streamed answer (or pipe the prompt on stdin) |
-| `earshot-local chat <model>` | Interactive conversation with history (`/exit`, `/clear`) |
-| `earshot-local see <model> <image> [question]` | Ask a vision model about a png/jpg/webp/gif |
-| `earshot-local hear <model> <audio> [question]` | Ask an audio model about a take; transcribes by default |
-| `earshot-local test <model>` | Load it, run a prompt, report speed |
-| `earshot-local bench <model>` | `llama-bench` on the weights (or kev latency over repeated calls) |
-| `earshot-local judge <model> --state "…" --ask 'id|type|question|opts…'` | Typed questions → calibrated probabilities (kev / TypeSafe API) |
+| `fornax ask <model> [prompt]` | One prompt, one streamed answer (or pipe the prompt on stdin) |
+| `fornax chat <model>` | Interactive conversation with history (`/exit`, `/clear`) |
+| `fornax see <model> <image> [question]` | Ask a vision model about a png/jpg/webp/gif |
+| `fornax hear <model> <audio> [question]` | Ask an audio model about a take; transcribes by default |
+| `fornax test <model>` | Load it, run a prompt, report speed |
+| `fornax bench <model>` | `llama-bench` on the weights (or kev latency over repeated calls) |
+| `fornax judge <model> --state "…" --ask 'id|type|question|opts…'` | Typed questions → calibrated probabilities (kev / TypeSafe API) |
 
 **Run models**
 
 | Command | What it does |
 | --- | --- |
-| `earshot-local run <model>` | Serve on loopback, register with Earshot; Ctrl-C stops |
-| `earshot-local ps` | Which catalog models are serving right now |
-| `earshot-local connect <model>` | Register an already-running model's server with Earshot |
+| `fornax run <model>` | Serve on loopback, register with Earshot; Ctrl-C stops |
+| `fornax ps` | Which catalog models are serving right now |
+| `fornax connect <model>` | Register an already-running model's server with Earshot |
 
 `use` commands reuse the model's server when it's already running via `run`;
 otherwise they spawn a temporary one on a scratch port and reap it when done.
@@ -56,7 +56,7 @@ otherwise they spawn a temporary one on a scratch port and reap it when done.
 ## Install
 
 ```sh
-go install github.com/earshot-run/earshot-local@latest
+go install github.com/earshot-run/fornax@latest
 ```
 
 Or grab a release binary for macOS (arm64, x86_64), Linux (x86_64, arm64), or
@@ -64,7 +64,7 @@ Windows (x86_64, arm64). Pure stdlib, one static binary, no dependencies.
 
 ## How it connects to Earshot
 
-When `run` is serving, earshot-local reads the daemon's private control
+When `run` is serving, fornax reads the daemon's private control
 capability (`~/.earshot/control.json`, same-user only) and POSTs the server's
 loopback URL to `/v1/local-models/manage`. Earshot probes `/v1/models` itself
 and offers the model in the agent's picker. Older daemons without that route,
@@ -78,12 +78,12 @@ each `mmproj` projector) carry an immutable revision, exact byte count, and
 SHA-256. Downloads resume through `.part` files, verify before install, and
 weights re-hash before every spawn. `llama-server` starts with a scrubbed
 environment and requires a generated loopback API key
-(`~/.earshot-local/server.key`, mode 600).
+(`~/.fornax/server.key`, mode 600).
 
 ## Layout
 
 ```
-~/.earshot-local/
+~/.fornax/
   engine/b11060/…        one unpacked llama.cpp release
   kev/src/…              pinned kev source + its uv venv
   models/<id>/<file>     weights + projectors + verified.sha256
@@ -92,7 +92,7 @@ environment and requires a generated loopback API key
   config.json            settings
 ```
 
-`EARSHOT_LOCAL_HOME` overrides the home directory.
+`FORNAX_HOME` overrides the home directory.
 
 ## Catalog
 
@@ -118,7 +118,7 @@ Jev-style decision model (LoRA + readout head on Qwen3 base) that answers
 typed questions with calibrated probabilities over TypeSafe's
 `/v1/systemone` API instead of chatting. The pinned checkpoint tarball and a
 pinned source tarball are fetched like every other artifact; a `uv` venv is
-built once under `~/.earshot-local/kev/` (needs [uv](https://docs.astral.sh/uv/),
+built once under `~/.fornax/kev/` (needs [uv](https://docs.astral.sh/uv/),
 macOS or Linux). The Qwen3 base model downloads from Hugging Face on first
 serve. `run kev-4b` prints a TypeSafe-SDK `base_url` block — the official
 `typesafe-sdk` works against it unchanged.

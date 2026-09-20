@@ -1,6 +1,6 @@
 package main
 
-// Filesystem layout under `~/.earshot-local` (or `$EARSHOT_LOCAL_HOME`):
+// Filesystem layout under `~/.fornax` (or `$FORNAX_HOME`):
 //   engine/b11060/…     one unpacked llama.cpp release
 //   engine/*.part       in-flight engine archives
 //   models/<id>/<file>  installed weights + projectors
@@ -28,13 +28,13 @@ const (
 )
 
 func home() string {
-	if dir := os.Getenv("EARSHOT_LOCAL_HOME"); dir != "" {
+	if dir := os.Getenv("FORNAX_HOME"); dir != "" {
 		return dir
 	}
 	if dir, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(dir, ".earshot-local")
+		return filepath.Join(dir, ".fornax")
 	}
-	return ".earshot-local"
+	return ".fornax"
 }
 
 func modelDir(root string, spec *modelSpec) string {
@@ -147,7 +147,7 @@ func modelPartialBytes(root string, spec *modelSpec) int64 {
 	return total
 }
 
-// Create a directory earshot-local owns, private to this user on unix.
+// Create a directory fornax owns, private to this user on unix.
 func protectDir(path string) error {
 	if info, err := os.Stat(path); err == nil && !info.IsDir() {
 		return fmt.Errorf("%s exists and is not a directory", path)
@@ -208,14 +208,14 @@ func loadConfig(root string) (*config, error) {
 		return &config{Version: 1}, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("could not read earshot-local settings: %w", err)
+		return nil, fmt.Errorf("could not read fornax settings: %w", err)
 	}
 	var cfg config
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("earshot-local settings are unreadable; delete %s to reset", filepath.Join(root, configFile))
+		return nil, fmt.Errorf("fornax settings are unreadable; delete %s to reset", filepath.Join(root, configFile))
 	}
 	if cfg.Version != 1 {
-		return nil, fmt.Errorf("update earshot-local to read these settings")
+		return nil, fmt.Errorf("update fornax to read these settings")
 	}
 	return &cfg, nil
 }

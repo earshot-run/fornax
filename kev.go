@@ -6,7 +6,7 @@ package main
 // questions with calibrated probabilities over TypeSafe's /v1/systemone API —
 // it does not chat, so it cannot run under llama-server.
 //
-// earshot-local pins the kev source tarball and each checkpoint tarball the
+// fornax pins the kev source tarball and each checkpoint tarball the
 // same way it pins llama.cpp and GGUFs, then bootstraps a uv venv once.
 
 import (

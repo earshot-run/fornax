@@ -1,8 +1,8 @@
-// earshot-local — a workbench for local models: browse, download, run,
+// fornax — a workbench for local models: browse, download, run,
 // talk to, see with, listen with, benchmark and clean up — on any machine,
 // with or without Earshot.
 //
-// `earshot-local run qwen3-4b` fetches a pinned llama.cpp plus pinned
+// `fornax run qwen3-4b` fetches a pinned llama.cpp plus pinned
 // weights, serves an OpenAI-compatible API on loopback behind a generated
 // key, and hands the endpoint to a live Earshot daemon (or prints it to
 // paste). `ask`, `chat`, `see` and `hear` use models directly.
@@ -24,11 +24,11 @@ import (
 	"time"
 )
 
-const usage = `earshot-local downloads pinned llama.cpp builds and pinned weights, then runs OpenAI-compatible model servers on loopback.
+const usage = `fornax downloads pinned llama.cpp builds and pinned weights, then runs OpenAI-compatible model servers on loopback.
 
-Fastest path: earshot-local run qwen3-4b
+Fastest path: fornax run qwen3-4b
 
-Usage: earshot-local <command>
+Usage: fornax <command>
 
 Get models:
   list     Catalog: sizes, modality, fit on this machine, what is installed
@@ -51,7 +51,7 @@ Run models:
   ps       Which catalog models are serving right now
   connect  Register an already-running model's server with Earshot
 
-Run "earshot-local <command> -h" for a command's flags.
+Run "fornax <command> -h" for a command's flags.
 `
 
 func main() {
@@ -97,15 +97,15 @@ func main() {
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 	default:
-		fmt.Fprintf(os.Stderr, "earshot-local: unknown command %q\n\n%s", os.Args[1], usage)
+		fmt.Fprintf(os.Stderr, "fornax: unknown command %q\n\n%s", os.Args[1], usage)
 		os.Exit(2)
 	}
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			fmt.Fprintln(os.Stderr, "earshot-local: interrupted")
+			fmt.Fprintln(os.Stderr, "fornax: interrupted")
 			os.Exit(130)
 		}
-		fmt.Fprintf(os.Stderr, "earshot-local: %v\n", err)
+		fmt.Fprintf(os.Stderr, "fornax: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -143,10 +143,10 @@ func cmdList() error {
 
 func cmdPull(ctx context.Context, args []string) error {
 	set := flag.NewFlagSet("pull", flag.ExitOnError)
-	set.Usage = func() { fmt.Fprintln(os.Stderr, "usage: earshot-local pull <model>") }
+	set.Usage = func() { fmt.Fprintln(os.Stderr, "usage: fornax pull <model>") }
 	set.Parse(args)
 	if set.NArg() != 1 {
-		return fmt.Errorf("usage: earshot-local pull <model>")
+		return fmt.Errorf("usage: fornax pull <model>")
 	}
 	spec, eng, err := resolve(set.Arg(0))
 	if err != nil {
@@ -168,7 +168,7 @@ func resolve(id string) (*modelSpec, *engineSpec, error) {
 	}
 	eng := engine()
 	if eng == nil {
-		return nil, nil, fmt.Errorf("earshot-local does not have a pinned llama.cpp for %s/%s yet", runtime.GOOS, runtime.GOARCH)
+		return nil, nil, fmt.Errorf("fornax does not have a pinned llama.cpp for %s/%s yet", runtime.GOOS, runtime.GOARCH)
 	}
 	return spec, eng, nil
 }
@@ -208,11 +208,11 @@ func pull(ctx context.Context, spec *modelSpec, eng *engineSpec) error {
 func modelArgs(cmd string, args []string, extra string) (*modelSpec, *engineSpec, []string, error) {
 	set := flag.NewFlagSet(cmd, flag.ExitOnError)
 	set.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: earshot-local %s <model>%s\n", cmd, extra)
+		fmt.Fprintf(os.Stderr, "usage: fornax %s <model>%s\n", cmd, extra)
 	}
 	set.Parse(args)
 	if set.NArg() < 1 {
-		return nil, nil, nil, fmt.Errorf("usage: earshot-local %s <model>%s", cmd, extra)
+		return nil, nil, nil, fmt.Errorf("usage: fornax %s <model>%s", cmd, extra)
 	}
 	spec, eng, err := resolve(set.Arg(0))
 	if err != nil {
@@ -227,7 +227,7 @@ func cmdAsk(ctx context.Context, args []string) error {
 		return err
 	}
 	if spec.rt == runtimeKev {
-		return fmt.Errorf("%s answers typed questions, not prompts — use `earshot-local judge %s`", spec.id, spec.id)
+		return fmt.Errorf("%s answers typed questions, not prompts — use `fornax judge %s`", spec.id, spec.id)
 	}
 	prompt := strings.Join(rest, " ")
 	if prompt == "" {
@@ -238,7 +238,7 @@ func cmdAsk(ctx context.Context, args []string) error {
 		prompt = strings.TrimSpace(string(data))
 	}
 	if prompt == "" {
-		return fmt.Errorf("usage: earshot-local ask <model> <prompt…>")
+		return fmt.Errorf("usage: fornax ask <model> <prompt…>")
 	}
 	return runAsk(ctx, spec, eng, prompt)
 }
@@ -249,7 +249,7 @@ func cmdChat(ctx context.Context, args []string) error {
 		return err
 	}
 	if spec.rt == runtimeKev {
-		return fmt.Errorf("%s answers typed questions, not chat — use `earshot-local judge %s`", spec.id, spec.id)
+		return fmt.Errorf("%s answers typed questions, not chat — use `fornax judge %s`", spec.id, spec.id)
 	}
 	return runChat(ctx, spec, eng)
 }
@@ -260,7 +260,7 @@ func cmdSee(ctx context.Context, args []string) error {
 		return err
 	}
 	if len(rest) < 1 {
-		return fmt.Errorf("usage: earshot-local see <model> <image> [question…]")
+		return fmt.Errorf("usage: fornax see <model> <image> [question…]")
 	}
 	question := strings.Join(rest[1:], " ")
 	if question == "" {
@@ -275,7 +275,7 @@ func cmdHear(ctx context.Context, args []string) error {
 		return err
 	}
 	if len(rest) < 1 {
-		return fmt.Errorf("usage: earshot-local hear <model> <audio> [question…]")
+		return fmt.Errorf("usage: fornax hear <model> <audio> [question…]")
 	}
 	question := strings.Join(rest[1:], " ")
 	if question == "" {
@@ -322,11 +322,11 @@ func cmdJudge(ctx context.Context, args []string) error {
 	var asks askFlags
 	set.Var(&asks, "ask", "typed question: 'id|noul|instructions' or 'id|choice|instructions|opt1|opt2…' (repeatable)")
 	set.Usage = func() {
-		fmt.Fprintln(os.Stderr, `usage: earshot-local judge <model> --state "text" --ask 'id|type|instructions[|opts…]' [--ask …]
-       earshot-local judge <model> --json request.json   ('-' reads stdin)
+		fmt.Fprintln(os.Stderr, `usage: fornax judge <model> --state "text" --ask 'id|type|instructions[|opts…]' [--ask …]
+       fornax judge <model> --json request.json   ('-' reads stdin)
 
 examples:
-  earshot-local judge kev-4b --state "my order never arrived and I was charged twice" \
+  fornax judge kev-4b --state "my order never arrived and I was charged twice" \
     --ask 'escalate|noul|Needs urgent human attention?' \
     --ask 'team|choice|Which team?|returns|shipping|billing' \
     --ask 'mood|score|How upset?|calm|frustrated|angry'`)
@@ -341,7 +341,7 @@ examples:
 		id = set.Arg(0)
 	}
 	if id == "" {
-		return fmt.Errorf("usage: earshot-local judge <model> [--state …] [--ask …|--json …]")
+		return fmt.Errorf("usage: fornax judge <model> [--state …] [--ask …|--json …]")
 	}
 	spec, _, err := resolve(id)
 	if err != nil {
@@ -360,7 +360,7 @@ func cmdClean(args []string) error {
 	set := flag.NewFlagSet("clean", flag.ExitOnError)
 	all := set.Bool("all", false, "also remove every installed model and the engine")
 	set.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: earshot-local clean [-all]  — removes partial downloads and stale staging")
+		fmt.Fprintln(os.Stderr, "usage: fornax clean [-all]  — removes partial downloads and stale staging")
 	}
 	set.Parse(args)
 	return runClean(*all)
@@ -372,11 +372,11 @@ func cmdRun(ctx context.Context, args []string) error {
 	ctxSize := set.Int("ctx-size", contextWindow, "context window passed to llama-server")
 	noConnect := set.Bool("no-connect", false, "do not register the running server with Earshot")
 	set.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: earshot-local run <model> [-port N] [-ctx-size N] [-no-connect]")
+		fmt.Fprintln(os.Stderr, "usage: fornax run <model> [-port N] [-ctx-size N] [-no-connect]")
 	}
 	set.Parse(args)
 	if set.NArg() != 1 {
-		return fmt.Errorf("usage: earshot-local run <model>")
+		return fmt.Errorf("usage: fornax run <model>")
 	}
 	spec, eng, err := resolve(set.Arg(0))
 	if err != nil {
@@ -456,10 +456,10 @@ func killAndReap(cmd *exec.Cmd, exited <-chan error) {
 func cmdConnect(args []string) error {
 	set := flag.NewFlagSet("connect", flag.ExitOnError)
 	port := set.Int("port", 0, "loopback port the model is served on (default: the model's catalog port)")
-	set.Usage = func() { fmt.Fprintln(os.Stderr, "usage: earshot-local connect <model> [-port N]") }
+	set.Usage = func() { fmt.Fprintln(os.Stderr, "usage: fornax connect <model> [-port N]") }
 	set.Parse(args)
 	if set.NArg() != 1 {
-		return fmt.Errorf("usage: earshot-local connect <model>")
+		return fmt.Errorf("usage: fornax connect <model>")
 	}
 	spec := model(set.Arg(0))
 	if spec == nil {
@@ -482,7 +482,7 @@ func cmdConnect(args []string) error {
 		return err
 	}
 	if cfg.APIKey == "" {
-		return fmt.Errorf("no server key yet — run `earshot-local run %s` once first", spec.id)
+		return fmt.Errorf("no server key yet — run `fornax run %s` once first", spec.id)
 	}
 	served := servedModels(servePort, cfg.APIKey)
 	switch {
@@ -517,10 +517,10 @@ func contains(list []string, want string) bool {
 
 func cmdRm(args []string) error {
 	set := flag.NewFlagSet("rm", flag.ExitOnError)
-	set.Usage = func() { fmt.Fprintln(os.Stderr, "usage: earshot-local rm <model>") }
+	set.Usage = func() { fmt.Fprintln(os.Stderr, "usage: fornax rm <model>") }
 	set.Parse(args)
 	if set.NArg() != 1 {
-		return fmt.Errorf("usage: earshot-local rm <model>")
+		return fmt.Errorf("usage: fornax rm <model>")
 	}
 	spec := model(set.Arg(0))
 	if spec == nil {

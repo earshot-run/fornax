@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// The pinned catalog. Every artifact earshot-local will ever fetch is listed
+// The pinned catalog. Every artifact fornax will ever fetch is listed
 // here with its immutable revision, exact byte count, and SHA-256 — nothing
 // else is downloaded, and nothing downloaded is run before it matches all three.
 

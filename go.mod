@@ -1,3 +1,3 @@
-module github.com/earshot-run/earshot-local
+module github.com/earshot-run/fornax
 
 go 1.24

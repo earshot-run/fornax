@@ -1,7 +1,7 @@
 package main
 
 // A one-line download progress display: bytes, percent, rate, ETA.
-// Writes to stderr so `earshot-local pull > file` stays clean.
+// Writes to stderr so `fornax pull > file` stays clean.
 
 import (
 	"fmt"
