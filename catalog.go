@@ -15,17 +15,62 @@ const (
 	contextWindow = 16_384
 )
 
+// What a model can take as input.
+type modality int
+
+const (
+	modalText modality = iota
+	modalVision
+	modalAudio
+)
+
+func (m modality) String() string {
+	switch m {
+	case modalVision:
+		return "vision"
+	case modalAudio:
+		return "audio"
+	}
+	return "text"
+}
+
+type filePin struct {
+	file     string
+	revision string
+	bytes    int64
+	sha256   string
+}
+
 type modelSpec struct {
-	id         string
-	name       string
-	summary    string
-	file       string
-	url        string
-	revision   string
-	repository string
-	bytes      int64
-	sha256     string
-	port       int
+	id      string
+	name    string
+	summary string
+	kind    modality
+	repo    string
+	model   filePin
+	// Companion projector (vision/audio). nil for text-only models.
+	mmproj *filePin
+	port   int
+}
+
+func (spec *modelSpec) url(pin *filePin) string {
+	return fmt.Sprintf("https://huggingface.co/%s/resolve/%s/%s", spec.repo, pin.revision, pin.file)
+}
+
+// Every artifact this model needs, main weights first.
+func (spec *modelSpec) files() []*filePin {
+	if spec.mmproj != nil {
+		return []*filePin{&spec.model, spec.mmproj}
+	}
+	return []*filePin{&spec.model}
+}
+
+func (spec *modelSpec) totalBytes() int64 {
+	total := spec.model.bytes
+	if spec.mmproj != nil {
+		total += spec.mmproj.bytes
+	}
+	return total
 }
 
 type archiveKind int
@@ -41,58 +86,107 @@ type engineSpec struct {
 	sha256  string
 	archive string
 	kind    archiveKind
-	// The binary inside the unpacked archive, relative to its root.
+	// The binaries inside the unpacked archive, relative to its root.
 	binary string
+	bench  string
 }
 
 var models = []modelSpec{
 	{
-		id:         "qwen3-1.7b",
-		name:       "Qwen3 1.7B",
-		summary:    "Fastest replies; modest hardware.",
-		file:       "Qwen3-1.7B-Q8_0.gguf",
-		url:        "https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/90862c4b9d2787eaed51d12237eafdfe7c5f6077/Qwen3-1.7B-Q8_0.gguf",
-		revision:   "90862c4b9d2787eaed51d12237eafdfe7c5f6077",
-		repository: "Qwen/Qwen3-1.7B-GGUF",
-		bytes:      1_834_426_016,
-		sha256:     "061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a",
-		port:       7331,
+		id:      "qwen3-1.7b",
+		name:    "Qwen3 1.7B",
+		summary: "Fastest replies; modest hardware.",
+		kind:    modalText,
+		repo:    "Qwen/Qwen3-1.7B-GGUF",
+		model: filePin{
+			file:     "Qwen3-1.7B-Q8_0.gguf",
+			revision: "90862c4b9d2787eaed51d12237eafdfe7c5f6077",
+			bytes:    1_834_426_016,
+			sha256:   "061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a",
+		},
+		port: 7331,
 	},
 	{
-		id:         "qwen3-4b",
-		name:       "Qwen3 4B",
-		summary:    "A small local agent model for ordinary Macs.",
-		file:       "Qwen3-4B-Q4_K_M.gguf",
-		url:        "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/bc640142c66e1fdd12af0bd68f40445458f3869b/Qwen3-4B-Q4_K_M.gguf",
-		revision:   "bc640142c66e1fdd12af0bd68f40445458f3869b",
-		repository: "Qwen/Qwen3-4B-GGUF",
-		bytes:      2_497_280_256,
-		sha256:     "7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5",
-		port:       7332,
+		id:      "qwen3-4b",
+		name:    "Qwen3 4B",
+		summary: "A small local agent model for ordinary Macs.",
+		kind:    modalText,
+		repo:    "Qwen/Qwen3-4B-GGUF",
+		model: filePin{
+			file:     "Qwen3-4B-Q4_K_M.gguf",
+			revision: "bc640142c66e1fdd12af0bd68f40445458f3869b",
+			bytes:    2_497_280_256,
+			sha256:   "7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5",
+		},
+		port: 7332,
 	},
 	{
-		id:         "qwen3-8b",
-		name:       "Qwen3 8B",
-		summary:    "Sharper answers on 16 GB or more.",
-		file:       "Qwen3-8B-Q4_K_M.gguf",
-		url:        "https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/7c41481f57cb95916b40956ab2f0b139b296d974/Qwen3-8B-Q4_K_M.gguf",
-		revision:   "7c41481f57cb95916b40956ab2f0b139b296d974",
-		repository: "Qwen/Qwen3-8B-GGUF",
-		bytes:      5_027_783_488,
-		sha256:     "d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785",
-		port:       7333,
+		id:      "qwen3-8b",
+		name:    "Qwen3 8B",
+		summary: "Sharper answers on 16 GB or more.",
+		kind:    modalText,
+		repo:    "Qwen/Qwen3-8B-GGUF",
+		model: filePin{
+			file:     "Qwen3-8B-Q4_K_M.gguf",
+			revision: "7c41481f57cb95916b40956ab2f0b139b296d974",
+			bytes:    5_027_783_488,
+			sha256:   "d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785",
+		},
+		port: 7333,
 	},
 	{
-		id:         "qwen3-14b",
-		name:       "Qwen3 14B",
-		summary:    "The sharpest local take; wants 24 GB or more.",
-		file:       "Qwen3-14B-Q4_K_M.gguf",
-		url:        "https://huggingface.co/Qwen/Qwen3-14B-GGUF/resolve/530227a7d994db8eca5ab5ced2fb692b614357fd/Qwen3-14B-Q4_K_M.gguf",
-		revision:   "530227a7d994db8eca5ab5ced2fb692b614357fd",
-		repository: "Qwen/Qwen3-14B-GGUF",
-		bytes:      9_001_752_960,
-		sha256:     "500a8806e85ee9c83f3ae08420295592451379b4f8cf2d0f41c15dffeb6b81f0",
-		port:       7334,
+		id:      "qwen3-14b",
+		name:    "Qwen3 14B",
+		summary: "The sharpest local take; wants 24 GB or more.",
+		kind:    modalText,
+		repo:    "Qwen/Qwen3-14B-GGUF",
+		model: filePin{
+			file:     "Qwen3-14B-Q4_K_M.gguf",
+			revision: "530227a7d994db8eca5ab5ced2fb692b614357fd",
+			bytes:    9_001_752_960,
+			sha256:   "500a8806e85ee9c83f3ae08420295592451379b4f8cf2d0f41c15dffeb6b81f0",
+		},
+		port: 7334,
+	},
+	{
+		id:      "qwen2.5-vl-3b",
+		name:    "Qwen2.5-VL 3B",
+		summary: "Reads screenshots, photos and documents.",
+		kind:    modalVision,
+		repo:    "ggml-org/Qwen2.5-VL-3B-Instruct-GGUF",
+		model: filePin{
+			file:     "Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf",
+			revision: "5037fcf163dd95d1e41d1974465f0898ed108ca2",
+			bytes:    1_929_901_056,
+			sha256:   "d02fe9b69ad8cadbbd228e387667af66612c44bed29ffc8eb1e7caf9ac486c12",
+		},
+		mmproj: &filePin{
+			file:     "mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf",
+			revision: "5037fcf163dd95d1e41d1974465f0898ed108ca2",
+			bytes:    844_757_728,
+			sha256:   "980c9b2f78c04e6cff93d277ada09e768394f112d75db3b4e9dea8a69f9fb904",
+		},
+		port: 7335,
+	},
+	{
+		id:      "ultravox-1b",
+		name:    "Ultravox 1B",
+		summary: "Hears audio takes; transcribes and answers about them.",
+		kind:    modalAudio,
+		repo:    "ggml-org/ultravox-v0_5-llama-3_2-1b-GGUF",
+		model: filePin{
+			file:     "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+			revision: "5390c7c41cbd6f261f7f205fc0c5ae61bbdca650",
+			bytes:    807_694_464,
+			sha256:   "6f85a640a97cf2bf5b8e764087b1e83da0fdb51d7c9fab7d0fece9385611df83",
+		},
+		mmproj: &filePin{
+			file:     "mmproj-ultravox-v0_5-llama-3_2-1b-f16.gguf",
+			revision: "5390c7c41cbd6f261f7f205fc0c5ae61bbdca650",
+			bytes:    1_371_123_616,
+			sha256:   "b34dde1835752949d6b960528269af93c92fec91c61ea0534fcc73f96c1ed8b2",
+		},
+		port: 7336,
 	},
 }
 
@@ -115,6 +209,7 @@ func engine() *engineSpec {
 			archive: "llama-b11060-bin-" + name + ".tar.gz",
 			kind:    archiveTarGz,
 			binary:  "llama-b11060/llama-server",
+			bench:   "llama-b11060/llama-bench",
 		}
 	}
 	zipball := func(name string, bytes int64, sha256 string) *engineSpec {
@@ -125,6 +220,7 @@ func engine() *engineSpec {
 			archive: "llama-b11060-bin-" + name + ".zip",
 			kind:    archiveZip,
 			binary:  "llama-server.exe",
+			bench:   "llama-bench.exe",
 		}
 	}
 	switch runtime.GOOS + "/" + runtime.GOARCH {

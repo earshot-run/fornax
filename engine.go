@@ -71,7 +71,7 @@ func installEngine(root string, spec *engineSpec, archive string) error {
 		return fmt.Errorf("could not install llama.cpp: %w", err)
 	}
 	cleanup = false
-	if err := writeReceipt(finalDir, spec.sha256); err != nil {
+	if err := writeEngineReceipt(finalDir, spec.sha256); err != nil {
 		return err
 	}
 	os.Remove(archive)

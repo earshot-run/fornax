@@ -7,17 +7,23 @@ import (
 
 func TestEveryPinIsComplete(t *testing.T) {
 	for _, spec := range models {
-		if len(spec.sha256) != 64 {
-			t.Errorf("%s: sha256 is not 64 hex chars", spec.id)
+		for _, pin := range spec.files() {
+			url := spec.url(pin)
+			if len(pin.sha256) != 64 {
+				t.Errorf("%s: sha256 for %s is not 64 hex chars", spec.id, pin.file)
+			}
+			if !strings.Contains(url, pin.revision) {
+				t.Errorf("%s: url for %s does not carry the pinned revision", spec.id, pin.file)
+			}
+			if !strings.HasSuffix(url, pin.file) {
+				t.Errorf("%s: url for %s does not end with the pinned file", spec.id, pin.file)
+			}
+			if pin.bytes <= 0 {
+				t.Errorf("%s: incomplete pin for %s", spec.id, pin.file)
+			}
 		}
-		if !strings.Contains(spec.url, spec.revision) {
-			t.Errorf("%s: url does not carry the pinned revision", spec.id)
-		}
-		if !strings.HasSuffix(spec.url, spec.file) {
-			t.Errorf("%s: url does not end with the pinned file", spec.id)
-		}
-		if spec.bytes <= 0 || spec.port <= 1024 {
-			t.Errorf("%s: incomplete pin", spec.id)
+		if spec.port <= 1024 {
+			t.Errorf("%s: port %d is not usable", spec.id, spec.port)
 		}
 	}
 	ids := map[string]bool{}
@@ -34,6 +40,23 @@ func TestEveryPinIsComplete(t *testing.T) {
 	}
 }
 
+func TestModalityNeedsAProjector(t *testing.T) {
+	for _, spec := range models {
+		switch spec.kind {
+		case modalVision, modalAudio:
+			if spec.mmproj == nil {
+				t.Errorf("%s: %s model has no projector pin", spec.id, spec.kind)
+			}
+		case modalText:
+			if spec.mmproj != nil {
+				t.Errorf("%s: text model carries a projector", spec.id)
+			}
+		default:
+			t.Errorf("%s: unknown kind", spec.id)
+		}
+	}
+}
+
 func TestEnginePinIsComplete(t *testing.T) {
 	spec := engine()
 	if spec == nil {
@@ -45,7 +68,7 @@ func TestEnginePinIsComplete(t *testing.T) {
 	if !strings.HasSuffix(spec.url, spec.archive) {
 		t.Error("url does not end with the pinned archive")
 	}
-	if spec.binary == "" || spec.bytes <= 0 {
+	if spec.binary == "" || spec.bench == "" || spec.bytes <= 0 {
 		t.Error("incomplete engine pin")
 	}
 }

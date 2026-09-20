@@ -3,8 +3,9 @@ package main
 // Filesystem layout under `~/.earshot-local` (or `$EARSHOT_LOCAL_HOME`):
 //   engine/b11060/…     one unpacked llama.cpp release
 //   engine/*.part       in-flight engine archives
-//   models/<id>/<file>  installed weights + verified.sha256 + source.json
-//   models/<id>/*.part  in-flight weight downloads
+//   models/<id>/<file>  installed weights + projectors
+//   models/<id>/*.part  in-flight downloads
+//   verified.sha256     sha256sum lines, one per installed file
 //   server.key          the loopback API key llama-server enforces
 //   config.json         versioned settings
 
@@ -40,12 +41,16 @@ func modelDir(root string, spec *modelSpec) string {
 	return filepath.Join(root, "models", spec.id)
 }
 
-func modelFinal(root string, spec *modelSpec) string {
-	return filepath.Join(modelDir(root, spec), spec.file)
+func filePath(root string, spec *modelSpec, pin *filePin) string {
+	return filepath.Join(modelDir(root, spec), pin.file)
 }
 
-func modelPart(root string, spec *modelSpec) string {
-	return filepath.Join(modelDir(root, spec), spec.file+".part")
+func partPath(root string, spec *modelSpec, pin *filePin) string {
+	return filepath.Join(modelDir(root, spec), pin.file+".part")
+}
+
+func modelFinal(root string, spec *modelSpec) string {
+	return filePath(root, spec, &spec.model)
 }
 
 func engineDir(root string) string {
@@ -56,8 +61,8 @@ func enginePart(root string, spec *engineSpec) string {
 	return filepath.Join(root, "engine", spec.archive+".part")
 }
 
-func engineBinary(root string, spec *engineSpec) string {
-	return filepath.Join(engineDir(root), filepath.FromSlash(spec.binary))
+func engineBinary(root string, spec *engineSpec, rel string) string {
+	return filepath.Join(engineDir(root), filepath.FromSlash(rel))
 }
 
 func keyPath(root string) string {
@@ -68,29 +73,57 @@ func endpointURL(port int) string {
 	return fmt.Sprintf("http://127.0.0.1:%d/v1", port)
 }
 
+// A model is installed when every pinned file is present at its byte count
+// and the receipt lists the matching digests.
 func modelInstalled(root string, spec *modelSpec) bool {
-	info, err := os.Stat(modelFinal(root, spec))
-	if err != nil || info.Size() != spec.bytes {
+	dir := modelDir(root, spec)
+	for _, pin := range spec.files() {
+		info, err := os.Stat(filePath(root, spec, pin))
+		if err != nil || info.Size() != pin.bytes {
+			return false
+		}
+	}
+	return readReceipt(filepath.Join(dir, receipt), spec)
+}
+
+func writeReceipt(dir string, spec *modelSpec) error {
+	var lines strings.Builder
+	for _, pin := range spec.files() {
+		fmt.Fprintf(&lines, "%s  %s\n", pin.sha256, pin.file)
+	}
+	return atomicPrivate(filepath.Join(dir, receipt), []byte(lines.String()))
+}
+
+func readReceipt(path string, spec *modelSpec) bool {
+	value, err := os.ReadFile(path)
+	if err != nil {
 		return false
 	}
-	return readReceipt(filepath.Join(modelDir(root, spec), receipt), spec.sha256)
+	got := map[string]string{}
+	for _, line := range strings.Split(string(value), "\n") {
+		if sha, name, ok := strings.Cut(line, "  "); ok {
+			got[name] = sha
+		}
+	}
+	for _, pin := range spec.files() {
+		if got[pin.file] != pin.sha256 {
+			return false
+		}
+	}
+	return true
 }
 
 func engineInstalled(root string, spec *engineSpec) bool {
-	info, err := os.Stat(engineBinary(root, spec))
+	info, err := os.Stat(engineBinary(root, spec, spec.binary))
 	if err != nil || info.IsDir() {
 		return false
 	}
-	return readReceipt(filepath.Join(engineDir(root), receipt), spec.sha256)
+	data, err := os.ReadFile(filepath.Join(engineDir(root), receipt))
+	return err == nil && strings.TrimSpace(string(data)) == spec.sha256
 }
 
-func writeReceipt(dir, sha256 string) error {
+func writeEngineReceipt(dir, sha256 string) error {
 	return atomicPrivate(filepath.Join(dir, receipt), []byte(sha256+"\n"))
-}
-
-func readReceipt(path, expected string) bool {
-	value, err := os.ReadFile(path)
-	return err == nil && strings.TrimSpace(string(value)) == expected
 }
 
 func partialBytes(path string, expected int64) int64 {
@@ -99,6 +132,15 @@ func partialBytes(path string, expected int64) int64 {
 		return 0
 	}
 	return min(info.Size(), expected)
+}
+
+// Total resumable bytes a model already holds across its .part files.
+func modelPartialBytes(root string, spec *modelSpec) int64 {
+	var total int64
+	for _, pin := range spec.files() {
+		total += partialBytes(partPath(root, spec, pin), pin.bytes)
+	}
+	return total
 }
 
 // Create a directory earshot-local owns, private to this user on unix.

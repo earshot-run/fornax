@@ -1,9 +1,11 @@
-// earshot-local — browse, download, and run local models for Earshot.
+// earshot-local — a workbench for local models: browse, download, run,
+// talk to, see with, listen with, benchmark and clean up — on any machine,
+// with or without Earshot.
 //
-// `earshot-local run qwen3-4b` is the whole job: fetch a pinned llama.cpp,
-// fetch a pinned GGUF, serve an OpenAI-compatible API on loopback with a
-// generated key, and hand the URL to a live Earshot daemon (or print it to
-// paste).
+// `earshot-local run qwen3-4b` fetches a pinned llama.cpp plus pinned
+// weights, serves an OpenAI-compatible API on loopback behind a generated
+// key, and hands the endpoint to a live Earshot daemon (or prints it to
+// paste). `ask`, `chat`, `see` and `hear` use models directly.
 
 package main
 
@@ -12,6 +14,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -21,19 +24,31 @@ import (
 	"time"
 )
 
-const usage = `earshot-local downloads pinned llama.cpp builds and pinned GGUF weights, then runs an OpenAI-compatible server on loopback that Earshot can use.
+const usage = `earshot-local downloads pinned llama.cpp builds and pinned weights, then runs OpenAI-compatible model servers on loopback.
 
 Fastest path: earshot-local run qwen3-4b
 
 Usage: earshot-local <command>
 
-Commands:
-  list     Show the catalog: sizes, fit on this machine, what is installed
-  pull     Download a model (and the engine on first run); resumes interrupted downloads
-  run      Serve a model on loopback, then register it with Earshot; Ctrl-C stops
+Get models:
+  list     Catalog: sizes, modality, fit on this machine, what is installed
+  pull     Download a model (and the engine on first run); resumes if cut off
+  rm       Delete a model's files and any partial download
+  clean    Remove interrupted downloads and stale staging (-all wipes everything)
+  doctor   What this machine can run; engine, keys and Earshot status
+
+Use models:
+  ask      One prompt, one answer (arg or stdin), streamed
+  chat     Interactive conversation with history
+  see      Ask a vision model about an image
+  hear     Ask an audio model about a take — transcribes by default
+  test     Load the model, run a prompt, report speed
+  bench    llama-bench on the weights (pp/tg table)
+
+Run models:
+  run      Serve a model on loopback; registers with Earshot. Ctrl-C stops
+  ps       Which catalog models are serving right now
   connect  Register an already-running model's server with Earshot
-  rm       Delete a model's weights and any partial download
-  doctor   What this machine can run and how Earshot connectivity looks
 
 Run "earshot-local <command> -h" for a command's flags.
 `
@@ -52,14 +67,30 @@ func main() {
 		err = cmdList()
 	case "pull":
 		err = cmdPull(ctx, os.Args[2:])
-	case "run":
-		err = cmdRun(ctx, os.Args[2:])
-	case "connect":
-		err = cmdConnect(os.Args[2:])
 	case "rm":
 		err = cmdRm(os.Args[2:])
+	case "clean":
+		err = cmdClean(os.Args[2:])
 	case "doctor":
 		err = cmdDoctor()
+	case "ask":
+		err = cmdAsk(ctx, os.Args[2:])
+	case "chat":
+		err = cmdChat(ctx, os.Args[2:])
+	case "see":
+		err = cmdSee(ctx, os.Args[2:])
+	case "hear":
+		err = cmdHear(ctx, os.Args[2:])
+	case "test":
+		err = cmdTest(ctx, os.Args[2:])
+	case "bench":
+		err = cmdBench(ctx, os.Args[2:])
+	case "run":
+		err = cmdRun(ctx, os.Args[2:])
+	case "ps":
+		err = runPs()
+	case "connect":
+		err = cmdConnect(os.Args[2:])
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 	default:
@@ -78,25 +109,26 @@ func main() {
 
 func cmdList() error {
 	memory := memoryBytes()
-	fmt.Printf("%-14s %-10s %-22s %-12s %s\n", "id", "size", "name", "fit", "status")
 	root := home()
+	fmt.Printf("%-16s %-7s %-9s %-22s %-12s %s\n", "id", "kind", "size", "name", "fit", "status")
 	for i := range models {
 		spec := &models[i]
 		var status string
-		switch partial := partialBytes(modelPart(root, spec), spec.bytes); {
+		switch partial := modelPartialBytes(root, spec); {
 		case modelInstalled(root, spec):
 			status = "installed"
 		case partial > 0:
-			status = fmt.Sprintf("%d%% downloaded", partial*100/spec.bytes)
+			status = fmt.Sprintf("%d%% downloaded", partial*100/spec.totalBytes())
 		default:
 			status = "—"
 		}
-		fitLabel := modelFit(spec.bytes, memory).String()
-		if modelFit(spec.bytes, memory) == fitWont {
-			fitLabel = "needs " + humanSize(neededBytes(spec.bytes)) + "+"
+		fitLabel := modelFit(spec.totalBytes(), memory).String()
+		if modelFit(spec.totalBytes(), memory) == fitWont {
+			fitLabel = "needs " + humanSize(neededBytes(spec.totalBytes())) + "+"
 		}
-		fmt.Printf("%-14s %-10s %-22s %-12s %s\n", spec.id, humanSize(spec.bytes), spec.name, fitLabel, status)
-		fmt.Printf("%24s %s\n", "", spec.summary)
+		fmt.Printf("%-16s %-7s %-9s %-22s %-12s %s\n",
+			spec.id, spec.kind, humanSize(spec.totalBytes()), spec.name, fitLabel, status)
+		fmt.Printf("%33s %s\n", "", spec.summary)
 	}
 	engineState := "unsupported platform"
 	if engine() != nil {
@@ -148,12 +180,113 @@ func pull(ctx context.Context, spec *modelSpec, eng *engineSpec) error {
 		fmt.Printf("%s already installed\n", spec.id)
 		return nil
 	}
-	bar := newProgress(spec.id, spec.bytes)
+	bar := newProgress(spec.id, spec.totalBytes())
 	if err := ensureModel(ctx, root, spec, bar.set); err != nil {
 		return err
 	}
-	fmt.Printf("%s installed (%s)\n", spec.id, humanSize(spec.bytes))
+	fmt.Printf("%s installed (%s)\n", spec.id, humanSize(spec.totalBytes()))
 	return nil
+}
+
+// The argument after the command is always the model id; everything after it
+// is prompt text. Shared by ask/chat/see/hear/test/bench.
+func modelArgs(cmd string, args []string, extra string) (*modelSpec, *engineSpec, []string, error) {
+	set := flag.NewFlagSet(cmd, flag.ExitOnError)
+	set.Usage = func() {
+		fmt.Fprintf(os.Stderr, "usage: earshot-local %s <model>%s\n", cmd, extra)
+	}
+	set.Parse(args)
+	if set.NArg() < 1 {
+		return nil, nil, nil, fmt.Errorf("usage: earshot-local %s <model>%s", cmd, extra)
+	}
+	spec, eng, err := resolve(set.Arg(0))
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return spec, eng, set.Args()[1:], nil
+}
+
+func cmdAsk(ctx context.Context, args []string) error {
+	spec, eng, rest, err := modelArgs("ask", args, " [prompt…]  (or pipe it on stdin)")
+	if err != nil {
+		return err
+	}
+	prompt := strings.Join(rest, " ")
+	if prompt == "" {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return err
+		}
+		prompt = strings.TrimSpace(string(data))
+	}
+	if prompt == "" {
+		return fmt.Errorf("usage: earshot-local ask <model> <prompt…>")
+	}
+	return runAsk(ctx, spec, eng, prompt)
+}
+
+func cmdChat(ctx context.Context, args []string) error {
+	spec, eng, _, err := modelArgs("chat", args, "")
+	if err != nil {
+		return err
+	}
+	return runChat(ctx, spec, eng)
+}
+
+func cmdSee(ctx context.Context, args []string) error {
+	spec, eng, rest, err := modelArgs("see", args, " <image> [question…]")
+	if err != nil {
+		return err
+	}
+	if len(rest) < 1 {
+		return fmt.Errorf("usage: earshot-local see <model> <image> [question…]")
+	}
+	question := strings.Join(rest[1:], " ")
+	if question == "" {
+		question = "Describe this image."
+	}
+	return runSee(ctx, spec, eng, rest[0], question)
+}
+
+func cmdHear(ctx context.Context, args []string) error {
+	spec, eng, rest, err := modelArgs("hear", args, " <audio> [question…]")
+	if err != nil {
+		return err
+	}
+	if len(rest) < 1 {
+		return fmt.Errorf("usage: earshot-local hear <model> <audio> [question…]")
+	}
+	question := strings.Join(rest[1:], " ")
+	if question == "" {
+		question = "Transcribe what is said."
+	}
+	return runHear(ctx, spec, eng, rest[0], question)
+}
+
+func cmdTest(ctx context.Context, args []string) error {
+	spec, eng, _, err := modelArgs("test", args, "")
+	if err != nil {
+		return err
+	}
+	return runTest(ctx, spec, eng)
+}
+
+func cmdBench(ctx context.Context, args []string) error {
+	spec, eng, _, err := modelArgs("bench", args, "")
+	if err != nil {
+		return err
+	}
+	return runBench(ctx, spec, eng)
+}
+
+func cmdClean(args []string) error {
+	set := flag.NewFlagSet("clean", flag.ExitOnError)
+	all := set.Bool("all", false, "also remove every installed model and the engine")
+	set.Usage = func() {
+		fmt.Fprintln(os.Stderr, "usage: earshot-local clean [-all]  — removes partial downloads and stale staging")
+	}
+	set.Parse(args)
+	return runClean(*all)
 }
 
 func cmdRun(ctx context.Context, args []string) error {
@@ -191,13 +324,13 @@ func cmdRun(ctx context.Context, args []string) error {
 	if err := portFree(servePort); err != nil {
 		return err
 	}
-	cmd, err := spawnServer(root, eng, spec, servePort, *ctxSize)
+	cmd, err := spawnServer(root, eng, spec, servePort, *ctxSize, "")
 	if err != nil {
 		return err
 	}
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
-	if err := waitReady(ctx, cmd, exited, servePort, spec.id, key); err != nil {
+	if err := waitReady(ctx, exited, servePort, spec.id, key); err != nil {
 		killAndReap(cmd, exited)
 		return err
 	}
@@ -333,7 +466,7 @@ func cmdDoctor() error {
 			if cfgErr == nil && contains(servedModels(spec.port, cfg.APIKey), spec.id) {
 				serving = ", serving"
 			}
-			fmt.Printf("model:    %s installed%s\n", spec.id, serving)
+			fmt.Printf("model:    %s (%s) installed%s\n", spec.id, spec.kind, serving)
 		}
 	}
 	if earshotPresent() {

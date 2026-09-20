@@ -24,73 +24,82 @@ const (
 	maxHTTPBody = 2 * 1024 * 1024
 )
 
-// Download the model weights if needed, verify, promote into place.
+// Download every artifact a model needs, verify each, promote into place.
 // Resumable: a `.part` keeps its bytes between runs.
 func ensureModel(ctx context.Context, root string, spec *modelSpec, progress func(int64)) error {
-	if modelInstalled(root, spec) {
-		return nil
+	for _, pin := range spec.files() {
+		installed := fileInstalled(root, spec, pin)
+		if installed {
+			progress(pin.bytes)
+			continue
+		}
+		part, err := prepareCandidate(root, spec, pin)
+		if err != nil {
+			return err
+		}
+		if err := fetch(ctx, spec.url(pin), pin.bytes, part, progress); err != nil {
+			return err
+		}
+		if err := verify(part, pin.bytes, pin.sha256); err != nil {
+			return err
+		}
+		if err := promote(root, spec, pin, part); err != nil {
+			return err
+		}
 	}
-	part, err := prepareCandidate(root, spec)
-	if err != nil {
-		return err
-	}
-	if err := fetch(ctx, spec.url, spec.bytes, part, progress); err != nil {
-		return err
-	}
-	if err := verify(part, spec.bytes, spec.sha256); err != nil {
-		return err
-	}
-	return promote(root, spec, part)
+	return writeReceipt(modelDir(root, spec), spec)
 }
 
-func prepareCandidate(root string, spec *modelSpec) (string, error) {
+func fileInstalled(root string, spec *modelSpec, pin *filePin) bool {
+	info, err := os.Stat(filePath(root, spec, pin))
+	return err == nil && info.Size() == pin.bytes
+}
+
+func prepareCandidate(root string, spec *modelSpec, pin *filePin) (string, error) {
 	dir := modelDir(root, spec)
 	if err := protectDir(dir); err != nil {
 		return "", err
 	}
-	part := modelPart(root, spec)
-	final := modelFinal(root, spec)
+	part := partPath(root, spec, pin)
+	final := filePath(root, spec, pin)
 	// A verified-but-unpromoted file from an earlier crash resumes as a part.
 	if _, err := os.Stat(part); os.IsNotExist(err) {
-		if info, err := os.Stat(final); err == nil && info.Size() == spec.bytes && !modelInstalled(root, spec) {
+		if info, err := os.Stat(final); err == nil && info.Size() == pin.bytes {
 			if err := os.Rename(final, part); err != nil {
 				return "", fmt.Errorf("could not resume model verification: %w", err)
 			}
 		}
 	}
-	if info, err := os.Stat(part); err == nil && info.Size() > spec.bytes {
+	if info, err := os.Stat(part); err == nil && info.Size() > pin.bytes {
 		os.Remove(part)
 	}
 	return part, nil
 }
 
-func promote(root string, spec *modelSpec, part string) error {
-	final := modelFinal(root, spec)
+func promote(root string, spec *modelSpec, pin *filePin, part string) error {
+	final := filePath(root, spec, pin)
 	os.Remove(final)
 	if err := os.Rename(part, final); err != nil {
 		return fmt.Errorf("could not install model: %w", err)
 	}
-	dir := modelDir(root, spec)
-	if err := writeReceipt(dir, spec.sha256); err != nil {
-		return err
-	}
-	return atomicJSONPrivate(filepath.Join(dir, "source.json"), map[string]any{
-		"repository": spec.repository,
-		"revision":   spec.revision,
-		"file":       spec.file,
-		"bytes":      spec.bytes,
-		"sha256":     spec.sha256,
-	})
+	return nil
 }
 
-// Re-hash the whole GGUF before every spawn: the install receipt cannot
-// authorize weights that may have changed since.
+// Re-hash every pinned file before each spawn: the install receipt cannot
+// authorize bytes that may have changed since.
 func rehash(root string, spec *modelSpec) error {
-	return verify(modelFinal(root, spec), spec.bytes, spec.sha256)
+	for _, pin := range spec.files() {
+		if err := verify(filePath(root, spec, pin), pin.bytes, pin.sha256); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-func spawnServer(root string, engine *engineSpec, spec *modelSpec, port int, ctxSize int) (*exec.Cmd, error) {
-	binary := engineBinary(root, engine)
+// logPath "" inherits the terminal (the `run` case); a path redirects the
+// server's chatter to a file so one-shot commands keep stdout clean.
+func spawnServer(root string, eng *engineSpec, spec *modelSpec, port int, ctxSize int, logPath string) (*exec.Cmd, error) {
+	binary := engineBinary(root, eng, eng.binary)
 	args := []string{
 		"--model", modelFinal(root, spec),
 		"--alias", spec.id,
@@ -99,9 +108,19 @@ func spawnServer(root string, engine *engineSpec, spec *modelSpec, port int, ctx
 		"--ctx-size", fmt.Sprintf("%d", ctxSize),
 		"--parallel", "1",
 		"--jinja",
-		"--chat-template-kwargs", `{"enable_thinking":false}`,
 		"--api-key-file", keyPath(root),
-		"--no-webui",
+		"--no-ui",
+	}
+	if spec.mmproj != nil {
+		args = append(args, "--mmproj", filePath(root, spec, spec.mmproj))
+	}
+	if spec.kind == modalVision {
+		// llama.cpp warns below 1024 on Qwen-VL grounding tasks.
+		args = append(args, "--image-min-tokens", "1024")
+	}
+	if spec.kind == modalText {
+		// Qwen3 emits thinking traces unless reasoning is off.
+		args = append(args, "--reasoning", "off")
 	}
 	if runtime.GOOS != "windows" {
 		// The layer count is ignored where there is no offload backend.
@@ -119,8 +138,17 @@ func spawnServer(root string, engine *engineSpec, spec *modelSpec, port int, ctx
 		cmd.Env = append(cmd.Env, "TMPDIR="+tmp)
 	}
 	cmd.Stdin = nil
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	if logPath != "" {
+		log, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			return nil, fmt.Errorf("could not open %s: %w", logPath, err)
+		}
+		cmd.Stdout = log
+		cmd.Stderr = log
+	} else {
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+	}
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("could not start llama-server: %w", err)
 	}
@@ -128,7 +156,7 @@ func spawnServer(root string, engine *engineSpec, spec *modelSpec, port int, ctx
 }
 
 // Poll `/health` and `/v1/models` until the model is genuinely answering.
-func waitReady(ctx context.Context, cmd *exec.Cmd, exited <-chan error, port int, alias, key string) error {
+func waitReady(ctx context.Context, exited <-chan error, port int, alias, key string) error {
 	client := &http.Client{
 		Timeout:   3 * time.Second,
 		Transport: &http.Transport{Proxy: nil},
@@ -195,7 +223,8 @@ func authenticatedGet(client *http.Client, url, key string) map[string]any {
 	return value
 }
 
-// What the running server advertises, or nil when it is not up.
+// What the running server advertises, or nil when it is not up (or the key
+// is not its key).
 func servedModels(port int, key string) []string {
 	client := &http.Client{
 		Timeout:   3 * time.Second,
@@ -226,4 +255,16 @@ func portFree(port int) error {
 		return fmt.Errorf("port %d is already in use", port)
 	}
 	return listener.Close()
+}
+
+// A loopback port nothing on this machine is listening on, starting at base.
+func freePort(base int) (int, error) {
+	for port := base; port < base+200; port++ {
+		listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err == nil {
+			listener.Close()
+			return port, nil
+		}
+	}
+	return 0, fmt.Errorf("no free loopback port near %d", base)
 }
