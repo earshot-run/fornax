@@ -66,6 +66,7 @@ Add a `modelSpec` to `models` in `catalog.go` with a unique port
 | `kev.go` | kev runtime: uv venv, `/v1/systemone`, `judge` |
 | `apple.go` + `bridge.swift` | Apple Foundation Models: Swift stdio bridge + loopback adapter |
 | `draw.go` | stable-diffusion.cpp engine + `draw` |
+| `say.go` | `say` — text → WAV via `llama-tts` in the llama engine |
 | `embed.go` | `/v1/embeddings` client + `embed` |
 | `hf.go` | `pull hf:…` custom models + `custom.json` |
 | `ollama.go` | `pull ollama:…` via the Ollama registry |

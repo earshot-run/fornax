@@ -48,6 +48,7 @@ Use models:
   embed    Turn text into a vector — JSON on stdout
   compare  Same prompt to several models, side by side
   draw     Generate an image with a stable-diffusion.cpp model
+  say      Speak text with a speech model; -voice clones a reference take
 
 Run models:
   run      Serve a model on loopback; registers with Earshot. Ctrl-C stops
@@ -97,6 +98,8 @@ func main() {
 		err = cmdCompare(ctx, os.Args[2:])
 	case "draw":
 		err = cmdDraw(ctx, os.Args[2:])
+	case "say":
+		err = cmdSay(ctx, os.Args[2:])
 	case "run":
 		err = cmdRun(ctx, os.Args[2:])
 	case "ps":
@@ -161,6 +164,8 @@ func kindStyled(m modality) func(string) string {
 		return blue
 	case modalEmbed:
 		return dim
+	case modalSpeech:
+		return pink
 	}
 	return cyan
 }
@@ -357,6 +362,9 @@ func cmdAsk(ctx context.Context, args []string) error {
 	if spec.kind == modalImage {
 		return fmt.Errorf("%s draws, it does not chat — use `fornax draw %s \"prompt\"`", spec.id, spec.id)
 	}
+	if spec.kind == modalSpeech {
+		return fmt.Errorf("%s speaks, it does not chat — use `fornax say %s \"text\"`", spec.id, spec.id)
+	}
 	// --json / --schema sit after the model, before the prompt.
 	structured := flag.NewFlagSet("ask", flag.ExitOnError)
 	jsonOut := structured.Bool("json", false, "constrain the reply to a JSON object")
@@ -408,6 +416,9 @@ func cmdChat(ctx context.Context, args []string) error {
 	if spec.kind == modalImage {
 		return fmt.Errorf("%s draws, it does not chat — use `fornax draw %s \"prompt\"`", spec.id, spec.id)
 	}
+	if spec.kind == modalSpeech {
+		return fmt.Errorf("%s speaks, it does not chat — use `fornax say %s \"text\"`", spec.id, spec.id)
+	}
 	return runChat(ctx, spec, eng)
 }
 
@@ -458,6 +469,9 @@ func cmdTest(ctx context.Context, args []string) error {
 	if spec.kind == modalImage {
 		return fmt.Errorf("%s draws, it does not chat — `fornax draw %s \"prompt\"`", spec.id, spec.id)
 	}
+	if spec.kind == modalSpeech {
+		return runSayTest(ctx, spec, eng)
+	}
 	return runTest(ctx, spec, eng)
 }
 
@@ -480,6 +494,9 @@ func cmdBench(ctx context.Context, args []string) error {
 	}
 	if spec.kind == modalImage {
 		return fmt.Errorf("%s draws — there is no bench for image models; time `fornax draw %s …` instead", spec.id, spec.id)
+	}
+	if spec.kind == modalSpeech {
+		return fmt.Errorf("%s speaks — there is no bench for speech models; time `fornax say %s …` instead", spec.id, spec.id)
 	}
 	return runBench(ctx, spec, eng)
 }
@@ -579,6 +596,9 @@ func cmdRun(ctx context.Context, args []string) error {
 	}
 	if spec.rt == runtimeSD {
 		return fmt.Errorf("%s draws, it does not serve — `fornax draw %s \"prompt\"`", spec.id, spec.id)
+	}
+	if spec.kind == modalSpeech {
+		return fmt.Errorf("%s speaks, it does not serve — `fornax say %s \"text\"`", spec.id, spec.id)
 	}
 	servePort := spec.port
 	if *port != 0 {
@@ -686,6 +706,9 @@ func cmdConnect(args []string) error {
 	}
 	if spec.rt == runtimeSD {
 		return fmt.Errorf("%s draws, it does not serve — `fornax draw %s \"prompt\"`", spec.id, spec.id)
+	}
+	if spec.kind == modalSpeech {
+		return fmt.Errorf("%s speaks, it does not serve — `fornax say %s \"text\"`", spec.id, spec.id)
 	}
 	servePort := spec.port
 	if *port != 0 {

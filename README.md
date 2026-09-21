@@ -48,6 +48,7 @@ model inside macOS.
 | `fornax see <model> <image> [question]` | Ask a vision model about a png/jpg/webp/gif |
 | `fornax hear <model> <audio> [question]` | Ask an audio model about a take; transcribes by default |
 | `fornax draw <model> "prompt"` | Generate an image — `-o`, `-steps`, `-seed`, `-size WxH`, `-neg` |
+| `fornax say <model> "text"` | Speak text to a WAV — `-o out.wav` (or `-` for stdout), `-voice ref.wav` clones a voice, `-lang en\|zh\|…` |
 | `fornax embed <model> [text]` | Turn text into a vector — one-line JSON on stdout |
 | `fornax compare <m1,m2,…> "prompt"` | Same prompt to several models, replies + speed side by side |
 | `fornax test <model>` | Load it, run a prompt, report speed |
@@ -131,6 +132,7 @@ require a generated API key (`~/.fornax/server.key`, mode 600).
 | `apple-fm` | text | os | Apple's on-device model; needs Apple Silicon on macOS 26+ |
 | `nomic-embed` | embed | 80 MB | text → vectors for search and RAG |
 | `embeddinggemma-300m` | embed | 318 MB | Google's small multilingual embedder |
+| `qwen3-tts-1.7b` | speech | 2.1 GB | text → speech in 10 languages, voice cloning via `-voice` |
 | `sdxl-turbo` | image | 6.5 GB | text to image in a few steps (stable-diffusion.cpp) |
 
 Text spans `Qwen/Qwen3-*-GGUF`, `ggml-org/Qwen3.5-0.8B`,
@@ -167,8 +169,11 @@ don't apply.
 
 `sdxl-turbo` runs on a pinned stable-diffusion.cpp build (`sd-cli`,
 foreground — no server) and ships engine binaries for macOS arm64, Linux
-x86_64 and Windows x86_64 only. `nomic-embed` is served by the same pinned
-llama.cpp with `--embeddings`, so `run`/`ps`/`connect` work on it too.
+x86_64 and Windows x86_64 only. `qwen3-tts-1.7b` runs through `llama-tts`
+in the same pinned llama.cpp archive — also foreground, no server —
+writing a 24 kHz WAV per call; `-voice take.wav` clones a voice from a
+reference take. `nomic-embed` is served by the same pinned llama.cpp with
+`--embeddings`, so `run`/`ps`/`connect` work on it too.
 
 Custom models: `fornax pull hf:Org/Repo/File.gguf` (or paste a
 huggingface.co blob/resolve URL) resolves the pin at fetch time — the LFS

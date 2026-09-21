@@ -25,6 +25,7 @@ const (
 	modalDecision
 	modalImage
 	modalEmbed
+	modalSpeech
 )
 
 func (m modality) String() string {
@@ -39,6 +40,8 @@ func (m modality) String() string {
 		return "image"
 	case modalEmbed:
 		return "embed"
+	case modalSpeech:
+		return "speech"
 	}
 	return "text"
 }
@@ -136,6 +139,7 @@ type engineSpec struct {
 	// The binaries inside the unpacked archive, relative to its root.
 	binary string
 	bench  string
+	tts    string
 }
 
 var models = []modelSpec{
@@ -404,6 +408,7 @@ func engine() *engineSpec {
 			kind:    archiveTarGz,
 			binary:  "llama-b11060/llama-server",
 			bench:   "llama-b11060/llama-bench",
+			tts:     "llama-b11060/llama-tts",
 		}
 	}
 	zipball := func(name string, bytes int64, sha256 string) *engineSpec {
@@ -415,6 +420,7 @@ func engine() *engineSpec {
 			kind:    archiveZip,
 			binary:  "llama-server.exe",
 			bench:   "llama-bench.exe",
+			tts:     "llama-tts.exe",
 		}
 	}
 	switch runtime.GOOS + "/" + runtime.GOARCH {
@@ -496,7 +502,10 @@ func humanSize(bytes int64) string {
 	if bytes >= gib {
 		return fmt.Sprintf("%.1f GB", float64(bytes)/float64(gib))
 	}
-	return fmt.Sprintf("%.0f MB", float64(bytes)/float64(1<<20))
+	if bytes >= 1<<20 {
+		return fmt.Sprintf("%.0f MB", float64(bytes)/float64(1<<20))
+	}
+	return fmt.Sprintf("%.0f KB", float64(bytes)/float64(1<<10))
 }
 
 func unknownModel(id string) error {

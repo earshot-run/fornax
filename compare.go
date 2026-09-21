@@ -51,6 +51,9 @@ func cmdCompare(ctx context.Context, args []string) error {
 		if spec.kind == modalEmbed {
 			return fmt.Errorf("%s embeds, it doesn't chat — drop it or use `fornax embed %s`", spec.id, spec.id)
 		}
+		if spec.kind == modalSpeech {
+			return fmt.Errorf("%s speaks, it doesn't chat — drop it or use `fornax say %s`", spec.id, spec.id)
+		}
 		specs = append(specs, spec)
 		engs = append(engs, eng)
 	}

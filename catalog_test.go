@@ -43,7 +43,7 @@ func TestEveryPinIsComplete(t *testing.T) {
 func TestModalityNeedsAProjector(t *testing.T) {
 	for _, spec := range models {
 		switch spec.kind {
-		case modalVision, modalAudio:
+		case modalVision, modalAudio, modalSpeech:
 			if spec.mmproj == nil {
 				t.Errorf("%s: %s model has no projector pin", spec.id, spec.kind)
 			}
