@@ -11,6 +11,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -46,14 +47,25 @@ Use models:
   bench    llama-bench on the weights (kev/apple/embed: median request latency)
   judge    Ask a kev decision model typed questions (TypeSafe API)
   embed    Turn text into a vector — JSON on stdout
+  rerank   Score documents against a query, best first
   compare  Same prompt to several models, side by side
   draw     Generate an image with a stable-diffusion.cpp model
   say      Speak text with a speech model; -voice clones a reference take
+  talk     Take in → transcribe → answer → spoken reply out
+  record   Mic to WAV — the takes hear and talk consume
 
 Run models:
   run      Serve a model on loopback; registers with Earshot. Ctrl-C stops
   ps       Which catalog models are serving right now
   connect  Register an already-running model's server with Earshot
+
+Workbench:
+  show     Inspect a model's GGUF header — arch, params, quant, template
+  search   Find GGUF repos on Hugging Face to pull
+  version  Print the build version
+  upgrade  Check for a newer fornax release
+  mcp      Serve MCP on stdio — agents call ask/see/hear/embed/draw/say/list
+  completion  Shell completions: zsh, bash, fish
 
 Run "fornax <command> -h" for a command's flags.
 `
@@ -69,7 +81,7 @@ func main() {
 	var err error
 	switch os.Args[1] {
 	case "list":
-		err = cmdList()
+		err = cmdList(os.Args[2:])
 	case "pull":
 		err = cmdPull(ctx, os.Args[2:])
 	case "rm":
@@ -106,6 +118,26 @@ func main() {
 		err = runPs()
 	case "connect":
 		err = cmdConnect(os.Args[2:])
+	case "rerank":
+		err = cmdRerank(ctx, os.Args[2:])
+	case "show":
+		err = cmdShow(os.Args[2:])
+	case "talk":
+		err = cmdTalk(ctx, os.Args[2:])
+	case "record":
+		err = cmdRecord(ctx, os.Args[2:])
+	case "mcp":
+		err = cmdMCP(ctx, os.Args[2:])
+	case "search":
+		err = cmdSearch(ctx, os.Args[2:])
+	case "version":
+		err = cmdVersion(os.Args[2:])
+	case "upgrade":
+		err = cmdUpgrade(ctx, os.Args[2:])
+	case "completion":
+		err = cmdCompletion(os.Args[2:])
+	case "__complete_models":
+		err = cmdCompleteModels()
 	case "-h", "--help", "help":
 		printUsage(os.Stdout)
 	default:
@@ -166,17 +198,53 @@ func kindStyled(m modality) func(string) string {
 		return dim
 	case modalSpeech:
 		return pink
+	case modalRerank:
+		return dim
 	}
 	return cyan
 }
 
-func cmdList() error {
+func cmdList(args []string) error {
+	set := flag.NewFlagSet("list", flag.ExitOnError)
+	local := set.Bool("local", false, "installed models only")
+	asJSON := set.Bool("json", false, "one JSON object per model on stdout")
+	set.Usage = func() { fmt.Fprintln(os.Stderr, "usage: fornax list [--local] [--json]") }
+	set.Parse(args)
+	if set.NArg() != 0 {
+		return fmt.Errorf("usage: fornax list [--local] [--json]")
+	}
 	memory := memoryBytes()
 	root := home()
+	specs := allSpecs(root)
+	if *local {
+		var kept []*modelSpec
+		for _, spec := range specs {
+			if modelInstalled(root, spec) {
+				kept = append(kept, spec)
+			}
+		}
+		specs = kept
+	}
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		for _, spec := range specs {
+			fit, _ := fitLabel(spec, memory)
+			enc.Encode(struct {
+				ID        string `json:"id"`
+				Kind      string `json:"kind"`
+				Size      int64  `json:"bytes"`
+				Fit       string `json:"fit"`
+				Installed bool   `json:"installed"`
+				Repo      string `json:"repo"`
+				Revision  string `json:"revision"`
+				Summary   string `json:"summary"`
+			}{spec.id, spec.kind.String(), spec.sizeBytes(), fit, modelInstalled(root, spec), spec.repo, spec.model.revision, spec.summary})
+		}
+		return nil
+	}
 	fmt.Printf("  %s %s %s %s %s\n",
 		cell("id", 15, dim), cell("kind", 8, dim), cell("size", 7, dim), cell("fit", 12, dim), dim("status"))
-	for i := range models {
-		spec := &models[i]
+	for _, spec := range specs {
 		var status string
 		switch partial := modelPartialBytes(root, spec); {
 		case modelInstalled(root, spec):
@@ -198,29 +266,6 @@ func cmdList() error {
 			cell(fit, 12, fitStyle),
 			status)
 		fmt.Printf("  %s %s\n", cell("", 15, nil), dim(spec.summary))
-	}
-	if store, err := loadCustoms(root); err == nil && len(store.Models) > 0 {
-		fmt.Printf("\n  %s\n", dim("custom"))
-		for i := range store.Models {
-			spec := store.Models[i].spec()
-			var status string
-			switch {
-			case modelInstalled(root, spec):
-				status = markOK() + " installed"
-			case modelPartialBytes(root, spec) > 0:
-				status = yellow("◐") + fmt.Sprintf(" %d%%", modelPartialBytes(root, spec)*100/spec.totalBytes())
-			default:
-				status = markIdle()
-			}
-			fit, fitStyle := fitLabel(spec, memory)
-			fmt.Printf("  %s %s %s %s %s\n",
-				cell(spec.id, 15, bold),
-				cell(spec.kind.String(), 8, kindStyled(spec.kind)),
-				cell(humanSize(spec.sizeBytes()), 7, nil),
-				cell(fit, 12, fitStyle),
-				status)
-			fmt.Printf("  %s %s\n", cell("", 15, nil), dim(spec.summary))
-		}
 	}
 	engineState := "unsupported platform"
 	if engine() != nil {
@@ -245,14 +290,19 @@ func cmdPull(ctx context.Context, args []string) error {
 		fmt.Fprintln(os.Stderr, "usage: fornax pull <model>   (or hf:Org/Repo/File.gguf, ollama:<name>[:<tag>])")
 	}
 	set.Parse(args)
-	if set.NArg() != 1 {
-		return fmt.Errorf("usage: fornax pull <model>")
+	if set.NArg() < 1 {
+		return fmt.Errorf("usage: fornax pull <model>…")
 	}
-	spec, eng, err := resolve(set.Arg(0))
-	if err != nil {
-		return err
+	for _, id := range set.Args() {
+		spec, eng, err := resolve(id)
+		if err != nil {
+			return err
+		}
+		if err := pull(ctx, spec, eng); err != nil {
+			return err
+		}
 	}
-	return pull(ctx, spec, eng)
+	return nil
 }
 
 func resolve(id string) (*modelSpec, *engineSpec, error) {
@@ -365,6 +415,9 @@ func cmdAsk(ctx context.Context, args []string) error {
 	if spec.kind == modalSpeech {
 		return fmt.Errorf("%s speaks, it does not chat — use `fornax say %s \"text\"`", spec.id, spec.id)
 	}
+	if spec.kind == modalRerank {
+		return fmt.Errorf("%s ranks documents, it does not chat — use `fornax rerank %s \"query\" <doc…>`", spec.id, spec.id)
+	}
 	// --json / --schema sit after the model, before the prompt.
 	structured := flag.NewFlagSet("ask", flag.ExitOnError)
 	jsonOut := structured.Bool("json", false, "constrain the reply to a JSON object")
@@ -404,9 +457,6 @@ func cmdChat(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if len(rest) > 0 {
-		return fmt.Errorf("usage: fornax chat <model>  (it reads your replies once running)")
-	}
 	if spec.rt == runtimeKev {
 		return fmt.Errorf("%s answers typed questions, not chat — use `fornax judge %s`", spec.id, spec.id)
 	}
@@ -419,7 +469,24 @@ func cmdChat(ctx context.Context, args []string) error {
 	if spec.kind == modalSpeech {
 		return fmt.Errorf("%s speaks, it does not chat — use `fornax say %s \"text\"`", spec.id, spec.id)
 	}
-	return runChat(ctx, spec, eng)
+	if spec.kind == modalRerank {
+		return fmt.Errorf("%s ranks documents, it does not chat — use `fornax rerank %s \"query\" <doc…>`", spec.id, spec.id)
+	}
+	chatFlags := flag.NewFlagSet("chat", flag.ExitOnError)
+	speak := chatFlags.Bool("speak", false, "read replies aloud through an installed speech model")
+	chatFlags.Usage = func() { fmt.Fprintln(os.Stderr, "usage: fornax chat <model> [-speak]") }
+	chatFlags.Parse(rest)
+	if chatFlags.NArg() != 0 {
+		return fmt.Errorf("usage: fornax chat <model> [-speak]")
+	}
+	var voice *modelSpec
+	if *speak {
+		voice = speechSpec(home())
+		if voice == nil {
+			return fmt.Errorf("-speak needs an installed speech model — `fornax pull qwen3-tts-1.7b`")
+		}
+	}
+	return runChat(ctx, spec, eng, voice)
 }
 
 func cmdSee(ctx context.Context, args []string) error {
@@ -472,6 +539,9 @@ func cmdTest(ctx context.Context, args []string) error {
 	if spec.kind == modalSpeech {
 		return runSayTest(ctx, spec, eng)
 	}
+	if spec.kind == modalRerank {
+		return runRerankTest(ctx, spec, eng)
+	}
 	return runTest(ctx, spec, eng)
 }
 
@@ -497,6 +567,9 @@ func cmdBench(ctx context.Context, args []string) error {
 	}
 	if spec.kind == modalSpeech {
 		return fmt.Errorf("%s speaks — there is no bench for speech models; time `fornax say %s …` instead", spec.id, spec.id)
+	}
+	if spec.kind == modalRerank {
+		return fmt.Errorf("%s ranks — there is no bench for rerank models; time `fornax rerank %s …` instead", spec.id, spec.id)
 	}
 	return runBench(ctx, spec, eng)
 }

@@ -200,7 +200,7 @@ func runSayTest(ctx context.Context, spec *modelSpec, eng *engineSpec) error {
 	tmp.Close()
 	defer os.Remove(work)
 	started := time.Now()
-	if err := runSayQuiet(ctx, root, eng, spec, work); err != nil {
+	if err := runSayQuiet(ctx, root, eng, spec, "Reply with exactly: ok", work); err != nil {
 		return err
 	}
 	info, err := os.Stat(work)
@@ -212,12 +212,12 @@ func runSayTest(ctx context.Context, spec *modelSpec, eng *engineSpec) error {
 	return nil
 }
 
-func runSayQuiet(ctx context.Context, root string, eng *engineSpec, spec *modelSpec, out string) error {
+func runSayQuiet(ctx context.Context, root string, eng *engineSpec, spec *modelSpec, prompt, out string) error {
 	binary := engineBinary(root, eng, eng.tts)
 	cmd := exec.CommandContext(ctx, binary,
 		"-m", modelFinal(root, spec),
 		"-mm", filePath(root, spec, spec.mmproj),
-		"-p", "Reply with exactly: ok",
+		"-p", prompt,
 		"--output", out,
 		"--tts-lang", "en")
 	cmd.Dir = filepath.Dir(binary)
@@ -235,4 +235,44 @@ func runSayQuiet(ctx context.Context, root string, eng *engineSpec, spec *modelS
 		return fmt.Errorf("llama-tts exited: %w", err)
 	}
 	return nil
+}
+
+// `chat -speak` voice: the first installed speech model, or none.
+func speechSpec(root string) *modelSpec {
+	for _, spec := range allSpecs(root) {
+		if spec.kind == modalSpeech && modelInstalled(root, spec) {
+			return spec
+		}
+	}
+	return nil
+}
+
+// Synthesize text to a temp WAV and play it through the OS player.
+func speakText(ctx context.Context, spec *modelSpec, text string) error {
+	root := home()
+	eng := engine()
+	if eng == nil || eng.tts == "" {
+		return fmt.Errorf("no speech engine on this platform")
+	}
+	tmp, err := os.CreateTemp("", "fornax-speak-*.wav")
+	if err != nil {
+		return err
+	}
+	work := tmp.Name()
+	tmp.Close()
+	defer os.Remove(work)
+	if err := runSayQuiet(ctx, root, eng, spec, text, work); err != nil {
+		return err
+	}
+	player := "afplay"
+	switch runtime.GOOS {
+	case "linux":
+		player = "aplay"
+	case "windows":
+		fmt.Printf("%s %s\n", dim("audio at"), work)
+		return nil
+	}
+	play := exec.CommandContext(ctx, player, work)
+	play.Stdout, play.Stderr = os.Stderr, os.Stderr
+	return play.Run()
 }

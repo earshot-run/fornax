@@ -47,7 +47,7 @@ func TestModalityNeedsAProjector(t *testing.T) {
 			if spec.mmproj == nil {
 				t.Errorf("%s: %s model has no projector pin", spec.id, spec.kind)
 			}
-		case modalText, modalDecision, modalImage, modalEmbed:
+		case modalText, modalDecision, modalImage, modalEmbed, modalRerank:
 			if spec.mmproj != nil {
 				t.Errorf("%s: %s model carries a projector", spec.id, spec.kind)
 			}

@@ -177,6 +177,9 @@ func spawnServer(root string, eng *engineSpec, spec *modelSpec, port int, ctxSiz
 	if spec.kind == modalEmbed {
 		args = append(args, "--embeddings")
 	}
+	if spec.kind == modalRerank {
+		args = append(args, "--reranking")
+	}
 	if runtime.GOOS != "windows" {
 		// The layer count is ignored where there is no offload backend.
 		args = append(args, "--n-gpu-layers", "999")

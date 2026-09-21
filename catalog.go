@@ -26,6 +26,7 @@ const (
 	modalImage
 	modalEmbed
 	modalSpeech
+	modalRerank
 )
 
 func (m modality) String() string {
@@ -42,6 +43,8 @@ func (m modality) String() string {
 		return "embed"
 	case modalSpeech:
 		return "speech"
+	case modalRerank:
+		return "rerank"
 	}
 	return "text"
 }

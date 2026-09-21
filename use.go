@@ -115,8 +115,9 @@ func runAsk(ctx context.Context, spec *modelSpec, eng *engineSpec, prompt string
 	})
 }
 
-// A multi-turn REPL with history until /exit, /quit or Ctrl-D.
-func runChat(ctx context.Context, spec *modelSpec, eng *engineSpec) error {
+// A multi-turn REPL with history until /exit, /quit or Ctrl-D. A non-nil
+// voice reads each reply aloud (`chat -speak`).
+func runChat(ctx context.Context, spec *modelSpec, eng *engineSpec, voice *modelSpec) error {
 	return withServer(ctx, spec, eng, func(url, key string) error {
 		fmt.Fprintf(os.Stderr, "%s\n", dim(spec.name+" — type a message, /exit to leave, /clear to forget"))
 		var history []message
@@ -155,6 +156,11 @@ func runChat(ctx context.Context, spec *modelSpec, eng *engineSpec) error {
 				return err
 			}
 			history = append(history, textMessage("assistant", reply.Text))
+			if voice != nil {
+				if err := speakText(ctx, voice, reply.Text); err != nil {
+					fmt.Fprintf(os.Stderr, "%s\n", dim("speech failed: "+err.Error()))
+				}
+			}
 		}
 	})
 }

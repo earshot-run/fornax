@@ -50,6 +50,9 @@ model inside macOS.
 | `fornax draw <model> "prompt"` | Generate an image — `-o`, `-steps`, `-seed`, `-size WxH`, `-neg` |
 | `fornax say <model> "text"` | Speak text to a WAV — `-o out.wav` (or `-` for stdout), `-voice ref.wav` clones a voice, `-lang en\|zh\|…` |
 | `fornax embed <model> [text]` | Turn text into a vector — one-line JSON on stdout |
+| `fornax rerank <model> "query" <doc…>` | Score documents against a query, best first (or pipe docs on stdin) — `-n` keeps the top N |
+| `fornax talk <audio>` | Transcribe a take, answer it, speak the reply — `-llm`/`-stt`/`-tts` pick the models, `-voice` clones |
+| `fornax record <out.wav>` | Mic to WAV — `-d seconds`, `-r rate`; feeds `hear` and `talk` |
 | `fornax compare <m1,m2,…> "prompt"` | Same prompt to several models, replies + speed side by side |
 | `fornax test <model>` | Load it, run a prompt, report speed |
 | `fornax bench <model>` | `llama-bench` on the weights (or median request latency for kev/apple/embed) |
@@ -62,6 +65,19 @@ model inside macOS.
 | `fornax run <model>` | Serve on loopback, register with Earshot; Ctrl-C stops |
 | `fornax ps` | Which catalog models are serving right now |
 | `fornax connect <model>` | Register an already-running model's server with Earshot |
+
+**Workbench**
+
+| Command | What it does |
+| --- | --- |
+| `fornax show <model>` | Pin card + a look inside the artifact — GGUF metadata (arch, params, quant, context), safetensors header, kev checkpoint |
+| `fornax search <query>` | GGUF repos on Hugging Face ranked by downloads; single-file repos print the ready `pull hf:` command |
+| `fornax mcp` | MCP server on stdio — agents call ask/see/hear/embed/draw/say/list as tools |
+| `fornax version` / `upgrade` | Build stamp; check for a newer release |
+| `fornax completion <zsh\|bash\|fish>` | Shell completion script on stdout |
+
+`fornax list --local` shows only installed models; `--json` prints one JSON
+object per model for scripts. `pull` takes several ids at once.
 
 `use` commands reuse the model's server when it's already running via `run`;
 otherwise they spawn a temporary one on a scratch port and reap it when done.

@@ -22,7 +22,7 @@ jobs:
             os=${t%/*}; arch=${t#*/}
             out=fornax-$os-$arch
             [ "$os" = windows ] && out=$out.exe
-            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w" -o "dist/$out" . || exit 1
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w -X main.version=$GITHUB_REF_NAME" -o "dist/$out" . || exit 1
           done
           cd dist && sha256sum * > sha256sums.txt
       - name: publish
