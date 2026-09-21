@@ -73,7 +73,7 @@ func TestUpgradeBinary(t *testing.T) {
 	if err := os.WriteFile(exe, []byte("old"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := upgradeBinary(context.Background(), rel, findAsset(rel, asset), findAsset(rel, "sha256sums.txt"), asset, exe); err != nil {
+	if err := upgradeBinary(context.Background(), rel, asset, exe); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(exe)
@@ -95,7 +95,7 @@ func TestUpgradeBinaryRejectsTampered(t *testing.T) {
 	if err := os.WriteFile(exe, []byte("old"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	err := upgradeBinary(context.Background(), rel, findAsset(rel, asset), findAsset(rel, "sha256sums.txt"), asset, exe)
+	err := upgradeBinary(context.Background(), rel, asset, exe)
 	if err == nil || !strings.Contains(err.Error(), "failed verification") {
 		t.Fatalf("want a verification error, got %v", err)
 	}

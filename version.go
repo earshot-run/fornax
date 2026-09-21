@@ -16,6 +16,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -28,6 +29,7 @@ var version = "dev"
 // Overridable in tests — the real values hit api.github.com.
 var (
 	releaseAPI  = "https://api.github.com/repos/earshot-run/fornax/releases/latest"
+	releaseRepo = "earshot-run/fornax"
 	installHint = "go install github.com/earshot-run/fornax@latest"
 )
 
@@ -104,8 +106,12 @@ func latestRelease(ctx context.Context, api string) (*ghRelease, error) {
 		return nil, fmt.Errorf("could not reach api.github.com: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusForbidden {
 		io.Copy(io.Discard, resp.Body)
+		// Anonymous API can't see a private repo — gh carries auth.
+		if rel, err := ghLatestRelease(ctx); err == nil {
+			return rel, nil
+		}
 		return &ghRelease{}, nil
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -137,6 +143,58 @@ func findAsset(rel *ghRelease, name string) string {
 	return ""
 }
 
+// gh carries auth — private repos' API and asset URLs 404 anonymously.
+func ghAvailable() bool {
+	if _, err := exec.LookPath("gh"); err != nil {
+		return false
+	}
+	return exec.Command("gh", "auth", "status").Run() == nil
+}
+
+func ghLatestRelease(ctx context.Context) (*ghRelease, error) {
+	out, err := exec.CommandContext(ctx, "gh", "api", "repos/"+releaseRepo+"/releases/latest").Output()
+	if err != nil {
+		return nil, err
+	}
+	var rel ghRelease
+	if err := json.Unmarshal(out, &rel); err != nil {
+		return nil, err
+	}
+	return &rel, nil
+}
+
+// Download one release asset to dir — plain HTTPS first, `gh release
+// download` as the authenticated fallback for private repos.
+func downloadAsset(ctx context.Context, rel *ghRelease, name, dir string) (string, error) {
+	dest := filepath.Join(dir, name)
+	if u := findAsset(rel, name); u != "" {
+		if body, err := fetchBody(ctx, u); err == nil {
+			f, ferr := os.Create(dest)
+			if ferr != nil {
+				body.Close()
+				return "", ferr
+			}
+			_, copyErr := io.Copy(f, body)
+			closeErr := body.Close()
+			f.Close()
+			if copyErr == nil && closeErr == nil {
+				return dest, nil
+			}
+			os.Remove(dest)
+		}
+	}
+	if ghAvailable() {
+		err := exec.CommandContext(ctx, "gh", "release", "download", rel.TagName,
+			"--repo", releaseRepo, "-p", name, "--dir", dir, "--clobber").Run()
+		if err == nil {
+			if info, serr := os.Stat(dest); serr == nil && !info.IsDir() {
+				return dest, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("could not download %s — %s", name, installHint)
+}
+
 // Download the platform asset, verify it against sha256sums.txt, and rename
 // it over the running binary. Windows cannot replace a running exe, so it
 // prints the asset link instead.
@@ -161,7 +219,7 @@ func performUpgrade(ctx context.Context, rel *ghRelease, latest string) error {
 		return nil
 	}
 	fmt.Fprintf(os.Stderr, "%s\n", dim("downloading fornax "+rel.TagName))
-	if err := upgradeBinary(ctx, rel, assetURL, sumsURL, asset, exe); err != nil {
+	if err := upgradeBinary(ctx, rel, asset, exe); err != nil {
 		return err
 	}
 	fmt.Printf("%s fornax v%s → v%s\n", green("✓"), current(), latest)
@@ -169,13 +227,22 @@ func performUpgrade(ctx context.Context, rel *ghRelease, latest string) error {
 }
 
 // Write the verified asset over exe via a sibling temp file + rename.
-func upgradeBinary(ctx context.Context, rel *ghRelease, assetURL, sumsURL, asset, exe string) error {
-	sums, err := fetchText(ctx, sumsURL)
+func upgradeBinary(ctx context.Context, rel *ghRelease, asset, exe string) error {
+	dir, err := os.MkdirTemp("", "fornax-upgrade-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	sumsPath, err := downloadAsset(ctx, rel, "sha256sums.txt", dir)
+	if err != nil {
+		return err
+	}
+	sums, err := os.ReadFile(sumsPath)
 	if err != nil {
 		return err
 	}
 	want := ""
-	for _, line := range strings.Split(sums, "\n") {
+	for _, line := range strings.Split(string(sums), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) == 2 && fields[1] == asset {
 			want = fields[0]
@@ -184,32 +251,38 @@ func upgradeBinary(ctx context.Context, rel *ghRelease, assetURL, sumsURL, asset
 	if want == "" {
 		return fmt.Errorf("sha256sums.txt in %s has no entry for %s", rel.TagName, asset)
 	}
-	tmp := exe + ".new"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
+	binPath, err := downloadAsset(ctx, rel, asset, dir)
 	if err != nil {
-		return fmt.Errorf("cannot write next to %s — %w (try sudo, or %s)", exe, err, installHint)
-	}
-	h := sha256.New()
-	dl, err := fetchBody(ctx, assetURL)
-	if err != nil {
-		f.Close()
-		os.Remove(tmp)
 		return err
 	}
-	_, copyErr := io.Copy(io.MultiWriter(f, h), dl)
-	closeErr := dl.Close()
-	f.Close()
-	if copyErr != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("the download failed: %w", copyErr)
+	payload, err := os.Open(binPath)
+	if err != nil {
+		return err
 	}
-	if closeErr != nil {
-		os.Remove(tmp)
-		return closeErr
+	defer payload.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, payload); err != nil {
+		return err
 	}
 	if got := hex.EncodeToString(h.Sum(nil)); got != want {
-		os.Remove(tmp)
 		return fmt.Errorf("the downloaded binary failed verification (sha256 %s, release says %s)", got, want)
+	}
+	tmp := exe + ".new"
+	in, err := os.Open(binPath)
+	if err != nil {
+		return err
+	}
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
+	if err != nil {
+		in.Close()
+		return fmt.Errorf("cannot write next to %s — %w (try sudo, or %s)", exe, err, installHint)
+	}
+	_, copyErr := io.Copy(out, in)
+	in.Close()
+	out.Close()
+	if copyErr != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("could not stage the new binary: %w", copyErr)
 	}
 	if err := os.Rename(tmp, exe); err != nil {
 		os.Remove(tmp)
