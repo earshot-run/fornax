@@ -140,20 +140,6 @@ type engineSpec struct {
 
 var models = []modelSpec{
 	{
-		id:      "qwen3-1.7b",
-		name:    "Qwen3 1.7B",
-		summary: "Fastest replies; modest hardware.",
-		kind:    modalText,
-		repo:    "Qwen/Qwen3-1.7B-GGUF",
-		model: filePin{
-			file:     "Qwen3-1.7B-Q8_0.gguf",
-			revision: "90862c4b9d2787eaed51d12237eafdfe7c5f6077",
-			bytes:    1_834_426_016,
-			sha256:   "061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a",
-		},
-		port: 7331,
-	},
-	{
 		id:      "qwen3-4b",
 		name:    "Qwen3 4B",
 		summary: "A small local agent model for ordinary Macs.",
@@ -296,26 +282,6 @@ var models = []modelSpec{
 			sha256:   "69066c8f279ec85ff48ab4059f6ebba0d2932ca57667f2bbdac7d9805bca9e7b",
 		},
 		port: 7345,
-	},
-	{
-		id:      "qwen2.5-vl-3b",
-		name:    "Qwen2.5-VL 3B",
-		summary: "Reads screenshots, photos and documents.",
-		kind:    modalVision,
-		repo:    "ggml-org/Qwen2.5-VL-3B-Instruct-GGUF",
-		model: filePin{
-			file:     "Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf",
-			revision: "5037fcf163dd95d1e41d1974465f0898ed108ca2",
-			bytes:    1_929_901_056,
-			sha256:   "d02fe9b69ad8cadbbd228e387667af66612c44bed29ffc8eb1e7caf9ac486c12",
-		},
-		mmproj: &filePin{
-			file:     "mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf",
-			revision: "5037fcf163dd95d1e41d1974465f0898ed108ca2",
-			bytes:    844_757_728,
-			sha256:   "980c9b2f78c04e6cff93d277ada09e768394f112d75db3b4e9dea8a69f9fb904",
-		},
-		port: 7335,
 	},
 	{
 		id:      "ultravox-1b",

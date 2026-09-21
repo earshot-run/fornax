@@ -10,7 +10,7 @@ import (
 
 // Non-image models are refused before anything is fetched.
 func TestDrawRejectsTextModel(t *testing.T) {
-	err := cmdDraw(context.Background(), []string{"qwen3-1.7b", "a door"})
+	err := cmdDraw(context.Background(), []string{"qwen3-4b", "a door"})
 	if err == nil || !strings.Contains(err.Error(), "does not draw") {
 		t.Fatalf("expected a does-not-draw error, got %v", err)
 	}

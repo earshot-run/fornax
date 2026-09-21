@@ -11,7 +11,7 @@ when it isn't.
 ```sh
 fornax ask qwen3-4b "explain a doorbell in one sentence"
 fornax ask qwen3-4b --schema answer.json "where is the Eiffel Tower?"
-fornax see qwen2.5-vl-3b screenshot.png "what does this UI say?"
+fornax see qwen3-vl-2b screenshot.png "what does this UI say?"
 fornax hear ultravox-1b take.wav
 fornax draw sdxl-turbo "a tiny doorbell icon, flat style" -o icon.png
 fornax embed nomic-embed "text to search over"
@@ -114,7 +114,6 @@ require a generated API key (`~/.fornax/server.key`, mode 600).
 
 | id | kind | size | notes |
 | --- | --- | --- | --- |
-| `qwen3-1.7b` | text | 1.7 GB | fastest replies; modest hardware |
 | `qwen3-4b` | text | 2.3 GB | a small local agent model for ordinary Macs |
 | `qwen3-8b` | text | 4.7 GB | sharper answers on 16 GB or more |
 | `qwen3-14b` | text | 8.4 GB | the largest model in the catalog; wants 24 GB or more |
@@ -124,7 +123,6 @@ require a generated API key (`~/.fornax/server.key`, mode 600).
 | `gemma-4-e4b` | vision | 8.6 GB | Google's multimodal 4B — text and images |
 | `qwen3.8-27b` | vision | 19 GB | current flagship local; sees images too, wants 32 GB |
 | `qwen3-vl-2b` | vision | 2.1 GB | current-gen vision-language at 2B |
-| `qwen2.5-vl-3b` | vision | 2.6 GB | reads screenshots, photos and documents |
 | `ultravox-1b` | audio | 2.0 GB | hears audio takes; transcribes and answers |
 | `qwen3-asr-0.6b` | audio | 972 MB | tiny dedicated speech-to-text |
 | `kev-0.6b` | decision | ~3 GB | typed questions → probabilities; fastest kev |
@@ -137,7 +135,7 @@ require a generated API key (`~/.fornax/server.key`, mode 600).
 
 Text spans `Qwen/Qwen3-*-GGUF`, `ggml-org/Qwen3.5-0.8B`,
 `ggml-org/Ministral-3-8B-Instruct` and `ggml-org/gpt-oss-20b`; vision is
-`ggml-org/Qwen2.5-VL-3B`, `Qwen3-VL-2B`, `gemma-4-E4B` and `Qwen3.8-27B`;
+`ggml-org/Qwen3-VL-2B`, `gemma-4-E4B` and `Qwen3.8-27B`;
 audio is `ggml-org/ultravox` and `Qwen3-ASR` — all pinned revisions on
 Hugging Face, served by pinned llama.cpp `b11060` (`--mmproj` loads the
 projectors). `list` marks whether each fits your RAM.

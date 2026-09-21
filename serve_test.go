@@ -23,9 +23,9 @@ func servedIDsServer(t *testing.T, body string) (*httptest.Server, *http.Client)
 
 func TestServedIDsOpenAIShape(t *testing.T) {
 	// llama-server repeats the id inside aliases — report it once.
-	server, client := servedIDsServer(t, `{"data":[{"id":"qwen3-1.7b","aliases":["qwen3-1.7b"]}],"object":"list"}`)
+	server, client := servedIDsServer(t, `{"data":[{"id":"qwen3-4b","aliases":["qwen3-4b"]}],"object":"list"}`)
 	ids := servedIDs(client, server.URL, "")
-	if len(ids) != 1 || ids[0] != "qwen3-1.7b" {
+	if len(ids) != 1 || ids[0] != "qwen3-4b" {
 		t.Fatalf("servedIDs returned %v", ids)
 	}
 }

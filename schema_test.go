@@ -15,7 +15,7 @@ func TestSchemaLive(t *testing.T) {
 	if os.Getenv("FORNAX_LIVE") == "" {
 		t.Skip("set FORNAX_LIVE=1 to run against real models")
 	}
-	spec, eng, err := resolve("qwen3-1.7b")
+	spec, eng, err := resolve("qwen3-4b")
 	if err != nil {
 		t.Fatal(err)
 	}
