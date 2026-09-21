@@ -231,10 +231,13 @@ func cmdPull(ctx context.Context, args []string) error {
 		if strings.HasPrefix(arg, "hf:") || strings.Contains(arg, "huggingface.co/") {
 			return cmdPullHF(ctx, args)
 		}
+		if strings.HasPrefix(arg, "ollama:") || strings.Contains(arg, "ollama.com/") {
+			return cmdPullOllama(ctx, args)
+		}
 	}
 	set := flag.NewFlagSet("pull", flag.ExitOnError)
 	set.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: fornax pull <model>   (or hf:Org/Repo/File.gguf — any public GGUF)")
+		fmt.Fprintln(os.Stderr, "usage: fornax pull <model>   (or hf:Org/Repo/File.gguf, ollama:<name>[:<tag>])")
 	}
 	set.Parse(args)
 	if set.NArg() != 1 {

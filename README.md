@@ -34,7 +34,7 @@ model inside macOS.
 | Command | What it does |
 | --- | --- |
 | `fornax list` | Catalog: sizes, modality, fit on this machine, what is installed |
-| `fornax pull <model>` | Download a model; resumes interrupted downloads. `pull hf:Org/Repo/File.gguf` adds any public GGUF (flags: `--as`, `--kind vision\|audio --mmproj F`, `--rev`) |
+| `fornax pull <model>` | Download a model; resumes interrupted downloads. `pull hf:Org/Repo/File.gguf` or `pull ollama:<name>[:<tag>]` adds any public model (flags: `--as`, `--kind vision\|audio --mmproj F`, `--rev`) |
 | `fornax rm <model>` | Delete a model's files and any partial download |
 | `fornax clean` | Remove interrupted downloads, stale staging and old server logs (`-all` wipes everything) |
 | `fornax doctor` | What this machine can run; engine, keys and Earshot status |
@@ -168,6 +168,12 @@ sha256 and byte size come from HF's own headers — saves the entry to
 `~/.fornax/custom.json` and installs through the same verify path. The id
 sticks for `ask`/`run`/`rm`/`clean` like any catalog model; `--as` names it,
 `--kind vision|audio --mmproj <file>` adds a projector.
+
+`fornax pull ollama:<name>[:<tag>]` (or an ollama.com/library URL) does the
+same against the Ollama registry: the manifest's layer digest is already the
+weights' SHA-256, so the pin comes straight from the manifest. Models with a
+projector layer (llava-style vision) install it as the `mmproj` and land as
+`vision` kind automatically; `--as`/`--kind` override.
 
 ## License
 

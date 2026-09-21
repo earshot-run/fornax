@@ -68,6 +68,7 @@ Add a `modelSpec` to `models` in `catalog.go` with a unique port
 | `draw.go` | stable-diffusion.cpp engine + `draw` |
 | `embed.go` | `/v1/embeddings` client + `embed` |
 | `hf.go` | `pull hf:…` custom models + `custom.json` |
+| `ollama.go` | `pull ollama:…` via the Ollama registry |
 | `compare.go`, `schema.go` | `compare`; `ask --json/--schema` |
 | `client.go` | OpenAI-compatible chat/embeddings client, media parts |
 | `paths.go` | `~/.fornax` layout, receipts, config, API key |

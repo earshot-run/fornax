@@ -33,10 +33,14 @@ type customEntry struct {
 	File     string `json:"file"`
 	Bytes    int64  `json:"bytes"`
 	SHA256   string `json:"sha256"`
-	MMProj   *struct {
+	// Direct download URL for non-Hugging-Face sources (ollama registry
+	// blobs). Empty = built from repo/revision/file on huggingface.co.
+	URL    string `json:"url,omitempty"`
+	MMProj *struct {
 		File   string `json:"file"`
 		Bytes  int64  `json:"bytes"`
 		SHA256 string `json:"sha256"`
+		URL    string `json:"url,omitempty"`
 	} `json:"mmproj,omitempty"`
 	Port int `json:"port"`
 }
@@ -98,12 +102,13 @@ func (e *customEntry) spec() *modelSpec {
 			revision: e.Revision,
 			bytes:    e.Bytes,
 			sha256:   e.SHA256,
+			url:      e.URL,
 		},
 		port: e.Port,
 	}
 	spec.summary = fmt.Sprintf("custom — %s @ %.7s", e.Repo+"/"+e.File, e.Revision)
 	if e.MMProj != nil {
-		spec.mmproj = &filePin{file: e.MMProj.File, revision: e.Revision, bytes: e.MMProj.Bytes, sha256: e.MMProj.SHA256}
+		spec.mmproj = &filePin{file: e.MMProj.File, revision: e.Revision, bytes: e.MMProj.Bytes, sha256: e.MMProj.SHA256, url: e.MMProj.URL}
 	}
 	return spec
 }
@@ -311,6 +316,7 @@ func cmdPullHF(ctx context.Context, args []string) error {
 			File   string `json:"file"`
 			Bytes  int64  `json:"bytes"`
 			SHA256 string `json:"sha256"`
+			URL    string `json:"url,omitempty"`
 		}{File: *mmproj, Bytes: proj.bytes, SHA256: proj.sha256}
 	}
 	fetching.stop("")
