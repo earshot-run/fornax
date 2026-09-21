@@ -1,8 +1,12 @@
 # fornax
 
+[![ci](https://github.com/earshot-run/fornax/actions/workflows/ci.yml/badge.svg)](https://github.com/earshot-run/fornax/actions/workflows/ci.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A workbench for local models: download, run, talk to, see with, listen with,
-benchmark and clean up — one command at a time, on any machine. Connects to
-[Earshot](https://earshot.run) when it's there; fully useful when it isn't.
+draw, embed, benchmark and clean up — one command at a time, on any machine.
+Connects to [Earshot](https://earshot.run) when it's there; fully useful
+when it isn't.
 
 ```sh
 fornax ask qwen3-4b "explain a doorbell in one sentence"
@@ -17,9 +21,11 @@ fornax judge kev-4b --state "charged twice, order never arrived" \
   --ask 'team|choice|Which team?|returns|shipping|billing'
 ```
 
-Every command fetches what it needs — a pinned llama.cpp build plus pinned
-GGUF weights (and a projector file for vision/audio models) — verifies it,
-and starts a loopback server if one isn't already running.
+Every command fetches what it needs — a pinned engine (llama.cpp,
+stable-diffusion.cpp, kev's source) plus pinned weights (with a projector
+file for vision/audio models) — verifies it, and starts a loopback server
+if one isn't already running. `apple-fm` needs no download at all: it's the
+model inside macOS.
 
 ## Commands
 
@@ -80,23 +86,26 @@ never needs a token.
 
 ## What it trusts
 
-Every artifact is pinned in source: the llama.cpp release and each GGUF (plus
-each `mmproj` projector) carry an immutable revision, exact byte count, and
-SHA-256. Downloads resume through `.part` files, verify before install, and
-weights re-hash before every spawn. `llama-server` starts with a scrubbed
-environment and requires a generated loopback API key
-(`~/.fornax/server.key`, mode 600).
+Every artifact is pinned in source: each engine release and each weights file
+(plus `mmproj` projectors and `hf:` customs, pinned at add time) carries an
+immutable revision, exact byte count, and SHA-256. Downloads resume through
+`.part` files, verify before install, and weights re-hash before every spawn.
+Model servers start with a scrubbed environment, bind loopback only, and
+require a generated API key (`~/.fornax/server.key`, mode 600).
 
 ## Layout
 
 ```
 ~/.fornax/
-  engine/b11060/…        one unpacked llama.cpp release
-  kev/src/…              pinned kev source + its uv venv
-  models/<id>/<file>     weights + projectors + verified.sha256
-  models/<id>/*.part     resumable downloads
-  server.key             loopback API key
-  config.json            settings
+  engine/b11060/…            one unpacked llama.cpp release
+  engine/sd-master-*/…       one unpacked stable-diffusion.cpp release
+  kev/src/…                  pinned kev source + its uv venv
+  models/<id>/<file>         weights + projectors + verified.sha256
+  models/<id>/*.part         resumable downloads
+  models/apple-fm/fm-bridge  compiled Swift bridge for apple-fm
+  server.key                 loopback API key
+  config.json                settings
+  custom.json                models added via `pull hf:…`
 ```
 
 `FORNAX_HOME` overrides the home directory.
