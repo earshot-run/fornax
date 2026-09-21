@@ -123,6 +123,12 @@ func cell(s string, width int, styleFn func(string) string) string {
 }
 
 func fitLabel(spec *modelSpec, memory int64) (string, func(string) string) {
+	if spec.rt == runtimeApple {
+		if appleSupported() == nil {
+			return "fits", green
+		}
+		return "needs macOS 26+", red
+	}
 	switch modelFit(spec.sizeBytes(), memory) {
 	case fitFits:
 		return "fits", green
@@ -163,10 +169,14 @@ func cmdList() error {
 			status = markIdle()
 		}
 		fit, fitStyle := fitLabel(spec, memory)
+		size := humanSize(spec.sizeBytes())
+		if spec.rt == runtimeApple {
+			size = "os"
+		}
 		fmt.Printf("  %s %s %s %s %s\n",
 			cell(spec.id, 15, bold),
 			cell(spec.kind.String(), 8, kindStyled(spec.kind)),
-			cell(humanSize(spec.sizeBytes()), 7, nil),
+			cell(size, 7, nil),
 			cell(fit, 12, fitStyle),
 			status)
 		fmt.Printf("  %s %s\n", cell("", 15, nil), dim(spec.summary))
@@ -205,6 +215,12 @@ func resolve(id string) (*modelSpec, *engineSpec, error) {
 		}
 		return spec, nil, nil
 	}
+	if spec.rt == runtimeApple {
+		if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
+			return nil, nil, fmt.Errorf("apple-fm is Apple's on-device model — it needs Apple Silicon on macOS 26+")
+		}
+		return spec, nil, nil
+	}
 	eng := engine()
 	if eng == nil {
 		return nil, nil, fmt.Errorf("fornax does not have a pinned llama.cpp for %s/%s yet", runtime.GOOS, runtime.GOARCH)
@@ -232,6 +248,13 @@ func pull(ctx context.Context, spec *modelSpec, eng *engineSpec) error {
 	}
 	if modelInstalled(root, spec) {
 		fmt.Fprintf(os.Stderr, "%s\n", dim(spec.id+" already installed"))
+		return nil
+	}
+	if spec.rt == runtimeApple {
+		if err := ensureModel(ctx, root, spec, nil); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "%s %s ready — the model itself ships in macOS\n", green("✓"), bold(spec.id))
 		return nil
 	}
 	bar := newProgress(spec.id, spec.totalBytes())
@@ -354,6 +377,9 @@ func cmdBench(ctx context.Context, args []string) error {
 	if spec.rt == runtimeKev {
 		return runKevBench(ctx, spec, 5)
 	}
+	if spec.rt == runtimeApple {
+		return runAppleBench(ctx, spec, 5)
+	}
 	return runBench(ctx, spec, eng)
 }
 
@@ -457,6 +483,9 @@ func cmdRun(ctx context.Context, args []string) error {
 	root := home()
 	if err := pull(ctx, spec, eng); err != nil {
 		return err
+	}
+	if spec.rt == runtimeApple {
+		return runApple(ctx, root, spec, servePort, *ctxSize != contextWindow, *noConnect)
 	}
 	verifying := spin("verifying " + spec.id)
 	if err := rehash(root, spec); err != nil {
@@ -653,6 +682,16 @@ func cmdDoctor() error {
 			row(markOK(), "kev", "runtime installed")
 		} else {
 			row(markIdle(), "kev", dim("runtime not built yet — first kev command builds it"))
+		}
+	}
+	if appleSpec := model("apple-fm"); appleSpec != nil {
+		switch err := appleSupported(); {
+		case err != nil:
+			row(markIdle(), "apple-fm", dim("unsupported here — needs Apple Silicon on macOS 26+"))
+		case appleInstalled(root, appleSpec):
+			row(markOK(), "apple-fm", "bridge compiled — ready to serve")
+		default:
+			row(markIdle(), "apple-fm", dim("supported — `fornax pull apple-fm` compiles the bridge"))
 		}
 	}
 	cfg, cfgErr := loadConfig(root)

@@ -77,6 +77,9 @@ func endpointURL(port int) string {
 // and the receipt lists the matching digests. kev models keep their verified
 // tarball and the checkpoint it unpacks to.
 func modelInstalled(root string, spec *modelSpec) bool {
+	if spec.rt == runtimeApple {
+		return appleInstalled(root, spec)
+	}
 	dir := modelDir(root, spec)
 	for _, pin := range spec.files() {
 		info, err := os.Stat(filePath(root, spec, pin))

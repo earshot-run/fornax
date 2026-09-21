@@ -38,12 +38,15 @@ func (m modality) String() string {
 }
 
 // What serves the model. runtimeLlama is the pinned llama.cpp binary;
-// runtimeKev is the python kev.serve app (see kev.go).
+// runtimeKev is the python kev.serve app (see kev.go); runtimeApple is the
+// on-device Foundation Models framework behind a compiled Swift bridge
+// (see apple.go).
 type runtimeKind int
 
 const (
 	runtimeLlama runtimeKind = iota
 	runtimeKev
+	runtimeApple
 )
 
 type filePin struct {
@@ -89,8 +92,12 @@ func (spec *modelSpec) sizeBytes() int64 {
 	return spec.totalBytes()
 }
 
-// Every artifact this model needs, main weights first.
+// Every artifact this model needs, main weights first. apple-fm ships in
+// the OS — there is nothing to fetch.
 func (spec *modelSpec) files() []*filePin {
+	if spec.rt == runtimeApple {
+		return nil
+	}
 	if spec.mmproj != nil {
 		return []*filePin{&spec.model, spec.mmproj}
 	}
@@ -269,6 +276,14 @@ var models = []modelSpec{
 		dtype:    "bf16",
 		fitBytes: 18 * gib,
 		port:     7343,
+	},
+	{
+		id:      "apple-fm",
+		name:    "Apple Foundation Model",
+		summary: "The ~3B model inside macOS — nothing to download, always free.",
+		kind:    modalText,
+		rt:      runtimeApple,
+		port:    7351,
 	},
 }
 

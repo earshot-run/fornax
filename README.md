@@ -107,6 +107,7 @@ environment and requires a generated loopback API key
 | `kev-0.6b` | decision | ~3 GB | typed questions → probabilities; fastest kev |
 | `kev-4b` | decision | ~10 GB | best accuracy per byte; the kev to start with |
 | `kev-8b` | decision | ~18 GB | sharpest kev answers; wants a bigger machine |
+| `apple-fm` | text | os | Apple's on-device model; needs Apple Silicon on macOS 26+ |
 
 Text models are `Qwen/Qwen3-*-GGUF`; vision is `ggml-org/Qwen2.5-VL-3B` and
 audio is `ggml-org/ultravox-v0_5-llama-3_2-1b` — all pinned revisions on
@@ -126,6 +127,17 @@ serve. `run kev-4b` prints a TypeSafe-SDK `base_url` block — the official
 `judge` flags: `--state` the document, repeatable `--ask
 'id|type|instructions|options…'` (types `noul`, `choice`, `score`), or
 `--json request.json` for a raw SystemOne body (`-` reads stdin).
+
+`apple-fm` is Apple's Foundation Models framework — the ~3B model that ships
+inside macOS 26+ on Apple Silicon, so there is nothing to download. `pull`
+compiles an embedded Swift bridge (`bridge.swift`, JSONL over stdio) and
+fornax fronts it with a loopback adapter that speaks the same
+OpenAI-compatible API as the other models — `ask`, `chat`, `test`, `bench`,
+`run`, `ps` and `connect` all work. It needs Apple Intelligence enabled in
+System Settings, and `swiftc` (Xcode Command Line Tools) for the one-time
+bridge compile. Token counts in `test`/`bench` are estimates (~4 chars/token)
+— the framework doesn't expose them. Text only: `see`, `hear` and `judge`
+don't apply.
 
 ## License
 

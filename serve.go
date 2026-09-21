@@ -30,6 +30,9 @@ func ensureModel(ctx context.Context, root string, spec *modelSpec, progress fun
 	if spec.rt == runtimeKev {
 		return ensureKevModel(ctx, root, spec, progress)
 	}
+	if spec.rt == runtimeApple {
+		return ensureAppleModel(ctx, root, spec)
+	}
 	for _, pin := range spec.files() {
 		installed := fileInstalled(root, spec, pin)
 		if installed {

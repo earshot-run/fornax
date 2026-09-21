@@ -28,6 +28,9 @@ func withServer(ctx context.Context, spec *modelSpec, eng *engineSpec, fn func(u
 	if spec.rt == runtimeKev {
 		return withKev(ctx, root, spec, fn)
 	}
+	if spec.rt == runtimeApple {
+		return withApple(ctx, root, spec, fn)
+	}
 	key, err := ensureKey(root)
 	if err != nil {
 		return err
