@@ -33,6 +33,7 @@ func withServer(ctx context.Context, spec *modelSpec, eng *engineSpec, fn func(u
 		return err
 	}
 	if contains(servedModels(spec.port, key), spec.id) {
+		fmt.Fprintf(os.Stderr, "%s\n", dim(fmt.Sprintf("reusing %s on :%d", spec.id, spec.port)))
 		return fn(endpointURL(spec.port), key)
 	}
 	if err := rehash(root, spec); err != nil {
@@ -50,10 +51,12 @@ func withServer(ctx context.Context, spec *modelSpec, eng *engineSpec, fn func(u
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
 	defer killAndReap(cmd, exited)
-	fmt.Fprintf(os.Stderr, "starting %s…\n", spec.id)
+	loading := spin("loading " + spec.id)
 	if err := waitReady(ctx, exited, port, spec.id, key, true); err != nil {
+		loading.stop("")
 		return fmt.Errorf("%w — server log: %s", err, logPath)
 	}
+	loading.stop("")
 	return fn(endpointURL(port), key)
 }
 
@@ -61,6 +64,7 @@ func withServer(ctx context.Context, spec *modelSpec, eng *engineSpec, fn func(u
 // kev speaks /v1/systemone, not chat completions — no API key either.
 func withKev(ctx context.Context, root string, spec *modelSpec, fn func(url, key string) error) error {
 	if contains(servedModels(spec.port, ""), kevAlias) {
+		fmt.Fprintf(os.Stderr, "%s\n", dim(fmt.Sprintf("reusing %s on :%d", spec.id, spec.port)))
 		return fn(endpointURL(spec.port), "")
 	}
 	bar := newProgress("kev runtime", kevSource.bytes)
@@ -82,10 +86,12 @@ func withKev(ctx context.Context, root string, spec *modelSpec, fn func(url, key
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
 	defer killAndReap(cmd, exited)
-	fmt.Fprintf(os.Stderr, "starting %s (first run downloads the base model)…\n", spec.id)
+	loading := spin("loading " + spec.id + " (first run downloads the base model)")
 	if err := waitReady(ctx, exited, port, kevAlias, "", false); err != nil {
+		loading.stop("")
 		return fmt.Errorf("%w — server log: %s", err, logPath)
 	}
+	loading.stop("")
 	return fn(endpointURL(port), "")
 }
 
@@ -109,11 +115,14 @@ func runAsk(ctx context.Context, spec *modelSpec, eng *engineSpec, prompt string
 // A multi-turn REPL with history until /exit, /quit or Ctrl-D.
 func runChat(ctx context.Context, spec *modelSpec, eng *engineSpec) error {
 	return withServer(ctx, spec, eng, func(url, key string) error {
-		fmt.Fprintf(os.Stderr, "%s — type a message, /exit to leave\n", spec.name)
+		fmt.Fprintf(os.Stderr, "%s\n", dim(spec.name+" — type a message, /exit to leave, /clear to forget"))
 		var history []message
 		reader := bufio.NewReader(os.Stdin)
+		interactive := isTTY(os.Stdin)
 		for {
-			fmt.Print("› ")
+			if interactive {
+				fmt.Print(cyan("› "))
+			}
 			line, err := reader.ReadString('\n')
 			if err != nil && err != io.EOF {
 				return err
@@ -132,7 +141,7 @@ func runChat(ctx context.Context, spec *modelSpec, eng *engineSpec) error {
 				return nil
 			case "/clear":
 				history = history[:0]
-				fmt.Fprintln(os.Stderr, "history cleared")
+				fmt.Fprintln(os.Stderr, dim("history cleared"))
 				continue
 			}
 			history = append(history, textMessage("user", line))
@@ -221,14 +230,14 @@ func runTest(ctx context.Context, spec *modelSpec, eng *engineSpec) error {
 		if strings.TrimSpace(reply.Text) == "" {
 			return fmt.Errorf("the model returned an empty reply")
 		}
-		fmt.Printf("%s: ok\n", spec.id)
-		fmt.Printf("  reply:     %q in %.1fs\n", strings.TrimSpace(reply.Text), elapsed.Seconds())
+		fmt.Printf("%s %s — %q in %.1fs\n", green("✓"), bold(spec.id),
+			strings.TrimSpace(reply.Text), elapsed.Seconds())
 		if reply.Timings != nil {
 			if v, ok := reply.Timings["predicted_per_second"].(float64); ok && v > 0 {
-				fmt.Printf("  generate:  %.0f tok/s\n", v)
+				fmt.Printf("    generate  %.0f tok/s\n", v)
 			}
 			if v, ok := reply.Timings["prompt_per_second"].(float64); ok && v > 0 {
-				fmt.Printf("  prompt:    %.0f tok/s\n", v)
+				fmt.Printf("    prompt    %.0f tok/s\n", v)
 			}
 		}
 		return nil
@@ -248,6 +257,7 @@ func runBench(ctx context.Context, spec *modelSpec, eng *engineSpec) error {
 	if _, err := os.Stat(bench); err != nil {
 		return fmt.Errorf("llama-bench is not in the pinned engine")
 	}
+	fmt.Fprintf(os.Stderr, "%s\n", dim(fmt.Sprintf("llama-bench on %s (pp512 / tg128)", spec.id)))
 	cmd := exec.CommandContext(ctx, bench, "-m", modelFinal(root, spec))
 	cmd.Dir = filepath.Dir(bench)
 	cmd.Env = []string{
@@ -269,14 +279,17 @@ func runPs() error {
 	any := false
 	for i := range models {
 		spec := &models[i]
-		served := servedModels(spec.port, cfg.APIKey)
-		if len(served) > 0 {
+		alias, key := spec.id, cfg.APIKey
+		if spec.rt == runtimeKev {
+			alias, key = kevAlias, ""
+		}
+		if contains(servedModels(spec.port, key), alias) {
 			any = true
-			fmt.Printf("%-16s :%d  serving [%s]\n", spec.id, spec.port, strings.Join(served, ", "))
+			fmt.Printf("%s %-16s %s :%d\n", markOK(), spec.id, dim("serving"), spec.port)
 		}
 	}
 	if !any {
-		fmt.Println("nothing is serving — `fornax run <model>` starts one")
+		fmt.Println(dim("nothing is serving — `fornax run <model>` starts one"))
 	}
 	return nil
 }
@@ -371,13 +384,13 @@ func runClean(all bool) error {
 		}
 	}
 	if len(removed) == 0 {
-		fmt.Println("nothing to clean")
+		fmt.Println(dim("nothing to clean"))
 		return nil
 	}
 	for _, path := range removed {
-		fmt.Printf("removed %s\n", strings.TrimPrefix(path, root+string(os.PathSeparator)))
+		fmt.Printf("  %s %s\n", dim("−"), strings.TrimPrefix(path, root+string(os.PathSeparator)))
 	}
-	fmt.Printf("freed %s\n", humanSize(freed))
+	fmt.Printf("freed %s\n", bold(humanSize(freed)))
 	return nil
 }
 

@@ -56,7 +56,7 @@ Run "fornax <command> -h" for a command's flags.
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprint(os.Stderr, usage)
+		printUsage(os.Stderr)
 		os.Exit(2)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -95,49 +95,88 @@ func main() {
 	case "connect":
 		err = cmdConnect(os.Args[2:])
 	case "-h", "--help", "help":
-		fmt.Print(usage)
+		printUsage(os.Stdout)
 	default:
-		fmt.Fprintf(os.Stderr, "fornax: unknown command %q\n\n%s", os.Args[1], usage)
+		fmt.Fprintf(os.Stderr, "%s unknown command %q\n\n", red("fornax:"), os.Args[1])
+		printUsage(os.Stderr)
 		os.Exit(2)
 	}
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			fmt.Fprintln(os.Stderr, "fornax: interrupted")
+			fmt.Fprintf(os.Stderr, "%s interrupted\n", dim("fornax:"))
 			os.Exit(130)
 		}
-		fmt.Fprintf(os.Stderr, "fornax: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s %v\n", red("fornax:"), err)
 		os.Exit(1)
 	}
+}
+
+// Pad to a visible width, then style — %-Ns would count the escape codes.
+func cell(s string, width int, styleFn func(string) string) string {
+	for len(s) < width {
+		s += " "
+	}
+	if styleFn == nil {
+		return s
+	}
+	return styleFn(s)
+}
+
+func fitLabel(spec *modelSpec, memory int64) (string, func(string) string) {
+	switch modelFit(spec.sizeBytes(), memory) {
+	case fitFits:
+		return "fits", green
+	case fitTight:
+		return "tight", yellow
+	case fitWont:
+		return "needs " + humanSize(neededBytes(spec.sizeBytes())) + "+", red
+	}
+	return "?", dim
+}
+
+func kindStyled(m modality) func(string) string {
+	switch m {
+	case modalVision:
+		return magenta
+	case modalAudio:
+		return yellow
+	case modalDecision:
+		return green
+	}
+	return cyan
 }
 
 func cmdList() error {
 	memory := memoryBytes()
 	root := home()
-	fmt.Printf("%-16s %-7s %-9s %-22s %-12s %s\n", "id", "kind", "size", "name", "fit", "status")
+	fmt.Printf("  %s %s %s %s %s\n",
+		cell("id", 15, dim), cell("kind", 8, dim), cell("size", 7, dim), cell("fit", 12, dim), dim("status"))
 	for i := range models {
 		spec := &models[i]
 		var status string
 		switch partial := modelPartialBytes(root, spec); {
 		case modelInstalled(root, spec):
-			status = "installed"
+			status = markOK() + " installed"
 		case partial > 0:
-			status = fmt.Sprintf("%d%% downloaded", partial*100/spec.totalBytes())
+			status = yellow("◐") + fmt.Sprintf(" %d%%", partial*100/spec.totalBytes())
 		default:
-			status = "—"
+			status = markIdle()
 		}
-		fitLabel := modelFit(spec.sizeBytes(), memory).String()
-		if modelFit(spec.sizeBytes(), memory) == fitWont {
-			fitLabel = "needs " + humanSize(neededBytes(spec.sizeBytes())) + "+"
-		}
-		fmt.Printf("%-16s %-7s %-9s %-22s %-12s %s\n",
-			spec.id, spec.kind, humanSize(spec.sizeBytes()), spec.name, fitLabel, status)
-		fmt.Printf("%33s %s\n", "", spec.summary)
+		fit, fitStyle := fitLabel(spec, memory)
+		fmt.Printf("  %s %s %s %s %s\n",
+			cell(spec.id, 15, bold),
+			cell(spec.kind.String(), 8, kindStyled(spec.kind)),
+			cell(humanSize(spec.sizeBytes()), 7, nil),
+			cell(fit, 12, fitStyle),
+			status)
+		fmt.Printf("  %s %s\n", cell("", 15, nil), dim(spec.summary))
 	}
 	engineState := "unsupported platform"
 	if engine() != nil {
 		engineState = "supported"
 	}
-	fmt.Printf("\nthis machine: %s RAM · engine llama.cpp %s (%s)\n", humanSize(memory), engineVersion, engineState)
+	fmt.Printf("\n  %s\n", dim(fmt.Sprintf("this machine: %s RAM · llama.cpp %s (%s)",
+		humanSize(memory), engineVersion, engineState)))
 	return nil
 }
 
@@ -183,7 +222,7 @@ func pull(ctx context.Context, spec *modelSpec, eng *engineSpec) error {
 		if err := ensureEngine(ctx, root, eng, bar.set); err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "engine llama.cpp %s installed\n", engineVersion)
+		fmt.Fprintf(os.Stderr, "%s engine llama.cpp %s installed\n", green("✓"), engineVersion)
 	}
 	if spec.rt == runtimeKev {
 		bar := newProgress("kev runtime", kevSource.bytes)
@@ -192,14 +231,14 @@ func pull(ctx context.Context, spec *modelSpec, eng *engineSpec) error {
 		}
 	}
 	if modelInstalled(root, spec) {
-		fmt.Fprintf(os.Stderr, "%s already installed\n", spec.id)
+		fmt.Fprintf(os.Stderr, "%s\n", dim(spec.id+" already installed"))
 		return nil
 	}
 	bar := newProgress(spec.id, spec.totalBytes())
 	if err := ensureModel(ctx, root, spec, bar.set); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "%s installed (%s)\n", spec.id, humanSize(spec.totalBytes()))
+	fmt.Fprintf(os.Stderr, "%s %s installed (%s)\n", green("✓"), bold(spec.id), dim(humanSize(spec.totalBytes())))
 	return nil
 }
 
@@ -419,10 +458,12 @@ func cmdRun(ctx context.Context, args []string) error {
 	if err := pull(ctx, spec, eng); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "verifying %s…\n", spec.id)
+	verifying := spin("verifying " + spec.id)
 	if err := rehash(root, spec); err != nil {
+		verifying.stop("")
 		return err
 	}
+	verifying.stop("")
 	if err := portFree(servePort); err != nil {
 		return err
 	}
@@ -460,21 +501,19 @@ func cmdRun(ctx context.Context, args []string) error {
 		return err
 	}
 	url := endpointURL(servePort)
+	fmt.Printf("\n%s %s\n", markOK(), bold(spec.name)+" is serving")
+	fmt.Printf("    %s %s\n", dim("url:"), cyan(url))
 	if spec.rt == runtimeKev {
-		fmt.Printf("\n%s is serving the TypeSafe API at %s\n", spec.name, url)
 		fmt.Println(kevBlock(url))
+	} else if *noConnect {
+		fmt.Println(pasteBlock(url, key, spec.id))
 	} else {
-		fmt.Printf("\n%s is serving at %s\n", spec.name, url)
-		if *noConnect {
-			fmt.Println(pasteBlock(url, key, spec.id))
-		} else {
-			reportConnect(url, key, spec.id)
-		}
+		reportConnect(url, key, spec.id)
 	}
-	fmt.Println("\nctrl-c to stop")
+	fmt.Println(dim("\nctrl-c to stop"))
 	select {
 	case <-ctx.Done():
-		fmt.Fprintln(os.Stderr, "stopping…")
+		fmt.Fprintln(os.Stderr, dim("stopping…"))
 		killAndReap(cmd, exited)
 		return nil
 	case status := <-exited:
@@ -542,10 +581,10 @@ func cmdConnect(args []string) error {
 	result, detail := connectEarshot(url, cfg.APIKey)
 	switch result {
 	case connectRegistered:
-		fmt.Printf("earshot: connected — '%s' is in Settings ▸ Local models\n", spec.id)
+		fmt.Printf("%s %s connected — %s is in Settings ▸ Local models\n", markOK(), green("earshot:"), bold(spec.id))
 		return nil
 	case connectUnavailable:
-		fmt.Printf("earshot: daemon answered but would not connect (%s)\n", detail)
+		fmt.Printf("%s daemon would not connect (%s)\n", yellow("earshot:"), detail)
 		fmt.Println(pasteBlock(url, cfg.APIKey, spec.id))
 		return nil
 	default:
@@ -575,49 +614,53 @@ func cmdRm(args []string) error {
 	}
 	dir := modelDir(home(), spec)
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		fmt.Printf("%s is not installed\n", spec.id)
+		fmt.Printf("%s %s is not installed\n", markIdle(), spec.id)
 		return nil
 	}
 	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("could not remove %s: %w", spec.name, err)
 	}
-	fmt.Printf("%s removed\n", spec.id)
+	fmt.Printf("%s %s removed\n", green("✓"), spec.id)
 	if spec.rt == runtimeKev {
-		fmt.Println("note: the shared Hugging Face cache (~/.cache/huggingface) is left alone")
+		fmt.Println(dim("note: the shared Hugging Face cache (~/.cache/huggingface) is left alone"))
 	}
 	return nil
 }
 
 func cmdDoctor() error {
 	root := home()
-	fmt.Printf("home:     %s\n", root)
-	fmt.Printf("platform: %s %s\n", runtime.GOOS, runtime.GOARCH)
-	memory := memoryBytes()
-	fmt.Printf("ram:      %s\n", humanSize(memory))
-	if eng := engine(); eng != nil {
-		state := "not downloaded"
-		if engineInstalled(root, eng) {
-			state = "installed"
-		}
-		fmt.Printf("engine:   llama.cpp %s (%s)\n", engineVersion, state)
-	} else {
-		fmt.Println("engine:   no pinned llama.cpp for this platform")
+	row := func(mark, label, value string) {
+		fmt.Printf("  %s %s %s\n", mark, cell(label, 8, dim), value)
 	}
-	if runtime.GOOS == "windows" {
-		fmt.Println("kev:      needs macOS or Linux")
-	} else if _, err := exec.LookPath("uv"); err != nil {
-		fmt.Println("kev:      `uv` not installed (needed to build its python env)")
-	} else if kevRuntimeReady(root) {
-		fmt.Println("kev:      runtime installed")
+	row(" ", "home", root)
+	row(" ", "machine", fmt.Sprintf("%s %s · %s RAM", runtime.GOOS, runtime.GOARCH, humanSize(memoryBytes())))
+	if eng := engine(); eng != nil {
+		if engineInstalled(root, eng) {
+			row(markOK(), "engine", "llama.cpp "+engineVersion)
+		} else {
+			row(markIdle(), "engine", "llama.cpp "+engineVersion+dim(" — first pull downloads it"))
+		}
 	} else {
-		fmt.Println("kev:      runtime not built yet (first kev command builds it)")
+		row(red("✗"), "engine", "no pinned llama.cpp for this platform")
+	}
+	switch {
+	case runtime.GOOS == "windows":
+		row(markIdle(), "kev", "needs macOS or Linux")
+	default:
+		if _, err := exec.LookPath("uv"); err != nil {
+			row(red("✗"), "kev", "needs `uv` — https://docs.astral.sh/uv/")
+		} else if kevRuntimeReady(root) {
+			row(markOK(), "kev", "runtime installed")
+		} else {
+			row(markIdle(), "kev", dim("runtime not built yet — first kev command builds it"))
+		}
 	}
 	cfg, cfgErr := loadConfig(root)
-	key := "not yet"
 	if cfgErr == nil && cfg.APIKey != "" {
-		key = "generated"
+		row(markOK(), "key", "generated")
+	} else {
+		row(markIdle(), "key", dim("generated on first run"))
 	}
-	fmt.Printf("key:      %s\n", key)
 	for i := range models {
 		spec := &models[i]
 		if modelInstalled(root, spec) {
@@ -627,15 +670,15 @@ func cmdDoctor() error {
 			}
 			serving := ""
 			if cfgErr == nil && contains(servedModels(spec.port, key), alias) {
-				serving = ", serving"
+				serving = green(fmt.Sprintf(" — serving :%d", spec.port))
 			}
-			fmt.Printf("model:    %s (%s) installed%s\n", spec.id, spec.kind, serving)
+			row(markOK(), "model", fmt.Sprintf("%s %s%s", spec.id, dim("("+spec.kind.String()+")"), serving))
 		}
 	}
 	if earshotPresent() {
-		fmt.Println("earshot:  daemon config found")
+		row(markOK(), "earshot", "daemon config found")
 	} else {
-		fmt.Println("earshot:  not found on this computer")
+		row(markIdle(), "earshot", dim("not found on this computer"))
 	}
 	return nil
 }

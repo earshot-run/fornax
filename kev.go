@@ -130,7 +130,7 @@ func ensureKevRuntime(ctx context.Context, root string, progress func(int64)) er
 	}
 	os.RemoveAll(staging)
 
-	fmt.Fprintf(os.Stderr, "building kev python env with uv (torch download, one time)…\n")
+	fmt.Fprintln(os.Stderr, dim("building kev python env with uv (torch download, one time)…"))
 	sync := exec.CommandContext(ctx, uv, "sync", "--extra", "serve")
 	sync.Dir = src
 	sync.Env = inheritEnv()
@@ -245,7 +245,8 @@ func kevSystemOne(ctx context.Context, url string, state string, questions map[s
 	return parsed, nil
 }
 
-// Print the answers as compact probability lines.
+// Print the answers as probability bars: one headline per question, then the
+// option distribution underneath when there is one.
 func printKevAnswers(reply map[string]any, order []string) {
 	answers, _ := reply["answers"].(map[string]any)
 	if answers == nil {
@@ -260,48 +261,78 @@ func printKevAnswers(reply map[string]any, order []string) {
 		}
 		sort.Strings(ids)
 	}
+	idWidth := 0
+	for _, id := range ids {
+		if len(id) > idWidth {
+			idWidth = len(id)
+		}
+	}
 	for _, id := range ids {
 		a, ok := answers[id].(map[string]any)
 		if !ok {
 			continue
 		}
+		name := cell(id, idWidth, bold)
 		switch a["type"] {
 		case "noul":
 			if v, ok := a["noul"].(float64); ok {
-				fmt.Printf("  %-14s noul %.2f\n", id+":", v)
+				fmt.Printf("  %s %s %.2f  %s\n", name, cell("noul", 7, dim), v, bar(v, cyan))
 			}
 		case "choice":
-			fmt.Printf("  %-14s choice %q — %s\n", id+":", a["choice"], probList(a))
+			fmt.Printf("  %s %s %s\n", name, cell("choice", 7, dim), green(fmt.Sprint(a["choice"])))
+			printKevProbs(a)
 		case "score":
 			if v, ok := a["score"].(float64); ok {
-				fmt.Printf("  %-14s score %.2f — %s\n", id+":", v, probList(a))
+				fmt.Printf("  %s %s %.2f → %s\n", name, cell("score", 7, dim), v, cyan(scoreLabel(a, v)))
+				printKevProbs(a)
 			}
 		}
 	}
 	if ms, ok := reply["latency_ms"].(float64); ok {
-		fmt.Printf("  %.0f ms\n", ms)
+		fmt.Printf("  %s\n", dim(fmt.Sprintf("%.0f ms", ms)))
 	}
 }
 
-func probList(answer map[string]any) string {
+// For a score answer the winning label comes from the legend ("1" → "frustrated").
+func scoreLabel(answer map[string]any, v float64) string {
+	legend, _ := answer["legend"].(map[string]any)
+	key := fmt.Sprint(int(v + 0.5))
+	if s, ok := legend[key].(string); ok {
+		return s
+	}
+	return fmt.Sprintf("%.0f", v)
+}
+
+// The option distribution, best first, as small bars.
+func printKevProbs(answer map[string]any) {
 	probs, _ := answer["probabilities"].(map[string]any)
 	legend, _ := answer["legend"].(map[string]any)
-	keys := make([]string, 0, len(probs))
-	for k := range probs {
-		keys = append(keys, k)
+	type row struct {
+		label string
+		p     float64
 	}
-	sort.Strings(keys)
-	parts := make([]string, 0, len(keys))
-	for _, k := range keys {
+	var rows []row
+	for k, raw := range probs {
+		p, ok := raw.(float64)
+		if !ok {
+			continue
+		}
 		label := k
-		if legend[k] != nil {
-			label = fmt.Sprint(legend[k])
+		if s, ok := legend[k].(string); ok {
+			label = s
 		}
-		if p, ok := probs[k].(float64); ok {
-			parts = append(parts, fmt.Sprintf("%s %.2f", label, p))
+		rows = append(rows, row{label, p})
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].p > rows[j].p })
+	width := 0
+	for _, r := range rows {
+		if len(r.label) > width {
+			width = len(r.label)
 		}
 	}
-	return strings.Join(parts, "  ")
+	for _, r := range rows {
+		fmt.Printf("      %s %.2f  %s\n", cell(r.label, width, nil), r.p, bar(r.p, cyan))
+	}
 }
 
 // A canned request for `test` and `bench`: three question shapes at once.
@@ -320,10 +351,11 @@ const kevProbeState = "Shoes arrived two weeks late and in the wrong size. Also 
 // What a `run` prints for a kev model: it speaks TypeSafe's API, not chat
 // completions, so the Earshot connect block does not apply.
 func kevBlock(url string) string {
-	return fmt.Sprintf(`TypeSafe SDK → client = TypeSafeClient(
-  base_url: %s
-  model:    %s
-  api_key:  "local"   (kev has no auth — loopback only)`, url, kevAlias)
+	return fmt.Sprintf("    %s\n      %s %s\n      %s %s\n      %s \"local\"  %s",
+		dim("TypeSafe SDK →"),
+		dim("base_url:"), url,
+		dim("model:"), kevAlias,
+		dim("api_key:"), dim("(kev has no auth — loopback only)"))
 }
 
 func runKevTest(ctx context.Context, spec *modelSpec) error {
@@ -333,7 +365,7 @@ func runKevTest(ctx context.Context, spec *modelSpec) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("%s: ok\n", spec.id)
+		fmt.Printf("%s %s\n", green("✓"), bold(spec.id))
 		printKevAnswers(reply, order)
 		return nil
 	})
@@ -352,14 +384,14 @@ func runKevBench(ctx context.Context, spec *modelSpec, runs int) error {
 			}
 			if ms, ok := reply["latency_ms"].(float64); ok {
 				lat = append(lat, ms)
-				fmt.Printf("  run %d: %.0f ms\n", i+1, ms)
+				fmt.Printf("  %s %.0f ms\n", dim(fmt.Sprintf("run %d", i+1)), ms)
 			}
 		}
 		if len(lat) == 0 {
 			return fmt.Errorf("the server reported no latencies")
 		}
 		sort.Float64s(lat)
-		fmt.Printf("%s: median %.0f ms over %d requests\n", spec.id, lat[len(lat)/2], len(lat))
+		fmt.Printf("%s %s — median %.0f ms over %d requests\n", green("✓"), bold(spec.id), lat[len(lat)/2], len(lat))
 		return nil
 	})
 }

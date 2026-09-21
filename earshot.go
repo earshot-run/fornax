@@ -106,7 +106,11 @@ func connectEarshot(url, apiKey string) (connectResult, string) {
 // The values an operator pastes into Settings ▸ Local models, or feeds any
 // other OpenAI-compatible client.
 func pasteBlock(url, apiKey, model string) string {
-	return fmt.Sprintf("Earshot → Settings → Local models → connect a server:\n  url:     %s\n  api key: %s\n  model:   %s", url, apiKey, model)
+	return fmt.Sprintf("    %s\n      %s %s\n      %s %s\n      %s %s",
+		dim("earshot → Settings → Local models → connect a server"),
+		dim("url:"), url,
+		dim("key:"), apiKey,
+		dim("model:"), model)
 }
 
 func earshotPresent() bool {
@@ -122,12 +126,12 @@ func reportConnect(url, apiKey, model string) {
 	result, detail := connectEarshot(url, apiKey)
 	switch result {
 	case connectRegistered:
-		fmt.Printf("earshot: connected — pick '%s' in the agent's model list\n", model)
+		fmt.Printf("    %s connected — pick %s in the agent's model list\n", green("earshot:"), bold("'"+model+"'"))
 	case connectUnavailable:
-		fmt.Printf("earshot: daemon answered but would not connect (%s)\n", detail)
+		fmt.Printf("    %s daemon would not connect (%s)\n", yellow("earshot:"), dim(detail))
 		fmt.Println(pasteBlock(url, apiKey, model))
 	case connectNoDaemon:
-		fmt.Println("earshot: no daemon found on this computer")
+		fmt.Printf("    %s no daemon found on this computer\n", dim("earshot:"))
 		fmt.Println(pasteBlock(url, apiKey, model))
 	}
 }
