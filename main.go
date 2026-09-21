@@ -870,6 +870,7 @@ func cmdDoctor() error {
 	row := func(mark, label, value string) {
 		fmt.Printf("  %s %s %s\n", mark, cell(label, 8, dim), value)
 	}
+	row(" ", "fornax", version)
 	row(" ", "home", root)
 	row(" ", "machine", fmt.Sprintf("%s %s · %s RAM", runtime.GOOS, runtime.GOARCH, humanSize(memoryBytes())))
 	if eng := engine(); eng != nil {

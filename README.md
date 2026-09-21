@@ -86,11 +86,23 @@ otherwise they spawn a temporary one on a scratch port and reap it when done.
 ## Install
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/earshot-run/fornax/main/install.sh | sh
+```
+
+The installer downloads the latest release binary for your platform (macOS
+arm64/x86_64, Linux x86_64/arm64), verifies it against the release's
+`sha256sums.txt`, and puts it in `~/.local/bin` (override with
+`FORNAX_INSTALL`). Windows: download `fornax-windows-*.exe` from
+[Releases](https://github.com/earshot-run/fornax/releases).
+
+From source needs only a Go toolchain — pure stdlib, one static binary:
+
+```sh
 go install github.com/earshot-run/fornax@latest
 ```
 
-Or grab a release binary for macOS (arm64, x86_64), Linux (x86_64, arm64), or
-Windows (x86_64, arm64). Pure stdlib, one static binary, no dependencies.
+`fornax upgrade` self-updates a release install in place; `-check` only
+reports. Shell completions: `fornax completion zsh|bash|fish`.
 
 ## How it connects to Earshot
 

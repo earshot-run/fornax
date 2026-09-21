@@ -6,20 +6,9 @@ beyond the per-platform memory probes. Keep it that way.
 ## Build and check
 
 ```sh
-go build -o fornax .
-gofmt -l .        # must print nothing
-go vet ./...
-go test ./...
-```
-
-CI runs all of that plus a six-target cross-build (`darwin/arm64`,
-`darwin/amd64`, `linux/amd64`, `linux/arm64`, `windows/amd64`,
-`windows/arm64`). Check it locally before pushing:
-
-```sh
-for t in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64 windows/arm64; do
-  CGO_ENABLED=0 GOOS=${t%/*} GOARCH=${t#*/} go build -o /dev/null . || exit 1
-done
+make build     # or: go build -o fornax .
+make verify    # gofmt check + vet + tests — the pre-push gate
+make matrix    # all six cross-builds (CI runs the same)
 ```
 
 Live tests hit real models and downloads — they are opt-in:
