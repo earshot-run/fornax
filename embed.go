@@ -32,6 +32,20 @@ func init() {
 		},
 		port: 7361,
 	})
+	models = append(models, modelSpec{
+		id:      "embeddinggemma-300m",
+		name:    "EmbeddingGemma 300M",
+		summary: "Google's small embedder — strong on multilingual retrieval.",
+		kind:    modalEmbed,
+		repo:    "ggml-org/embeddinggemma-300M-GGUF",
+		model: filePin{
+			file:     "embeddinggemma-300M-Q8_0.gguf",
+			revision: "0f741b5a6585bd53aeb15cd1372c56f2a0f65e12",
+			bytes:    333_590_944,
+			sha256:   "b5ce9d77a3fc4b3b39ccb5643c36777911cc4eb46a66962eadfa3f5f60490d63",
+		},
+		port: 7363,
+	})
 }
 
 func cmdEmbed(ctx context.Context, args []string) error {

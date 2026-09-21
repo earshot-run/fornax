@@ -118,17 +118,27 @@ require a generated API key (`~/.fornax/server.key`, mode 600).
 | `qwen3-4b` | text | 2.3 GB | a small local agent model for ordinary Macs |
 | `qwen3-8b` | text | 4.7 GB | sharper answers on 16 GB or more |
 | `qwen3-14b` | text | 8.4 GB | the largest model in the catalog; wants 24 GB or more |
+| `qwen3.5-0.8b` | text | 795 MB | newest tiny Qwen; very fast |
+| `ministral-3-8b` | text | 8.4 GB | Mistral's current 8B instruct |
+| `gpt-oss-20b` | text | 11.3 GB | OpenAI's open MoE — 3.6B active, reasoning and tools |
+| `gemma-4-e4b` | vision | 8.6 GB | Google's multimodal 4B — text and images |
+| `qwen3.8-27b` | vision | 19 GB | current flagship local; sees images too, wants 32 GB |
+| `qwen3-vl-2b` | vision | 2.1 GB | current-gen vision-language at 2B |
 | `qwen2.5-vl-3b` | vision | 2.6 GB | reads screenshots, photos and documents |
 | `ultravox-1b` | audio | 2.0 GB | hears audio takes; transcribes and answers |
+| `qwen3-asr-0.6b` | audio | 972 MB | tiny dedicated speech-to-text |
 | `kev-0.6b` | decision | ~3 GB | typed questions → probabilities; fastest kev |
 | `kev-4b` | decision | ~10 GB | best accuracy per byte; the kev to start with |
 | `kev-8b` | decision | ~18 GB | largest kev; wants a bigger machine |
 | `apple-fm` | text | os | Apple's on-device model; needs Apple Silicon on macOS 26+ |
 | `nomic-embed` | embed | 80 MB | text → vectors for search and RAG |
+| `embeddinggemma-300m` | embed | 318 MB | Google's small multilingual embedder |
 | `sdxl-turbo` | image | 6.5 GB | text to image in a few steps (stable-diffusion.cpp) |
 
-Text models are `Qwen/Qwen3-*-GGUF`; vision is `ggml-org/Qwen2.5-VL-3B` and
-audio is `ggml-org/ultravox-v0_5-llama-3_2-1b` — all pinned revisions on
+Text spans `Qwen/Qwen3-*-GGUF`, `ggml-org/Qwen3.5-0.8B`,
+`ggml-org/Ministral-3-8B-Instruct` and `ggml-org/gpt-oss-20b`; vision is
+`ggml-org/Qwen2.5-VL-3B`, `Qwen3-VL-2B`, `gemma-4-E4B` and `Qwen3.8-27B`;
+audio is `ggml-org/ultravox` and `Qwen3-ASR` — all pinned revisions on
 Hugging Face, served by pinned llama.cpp `b11060` (`--mmproj` loads the
 projectors). `list` marks whether each fits your RAM.
 
@@ -177,6 +187,6 @@ projector layer (llava-style vision) install it as the `mmproj` and land as
 
 ## License
 
-MIT. llama.cpp is MIT (ggml-org); Qwen3 weights are Apache-2.0 (Qwen);
-Qwen2.5-VL is Apache-2.0; Ultravox/Llama-3.2 under their model licenses;
-kev is Apache-2.0 (jaredpalmer).
+MIT. llama.cpp is MIT (ggml-org); Qwen, gpt-oss, Ministral and Ultravox
+weights are Apache-2.0; Gemma weights are under the Gemma Terms of Use;
+Llama-3.2 under its model license; kev is Apache-2.0 (jaredpalmer).
