@@ -16,11 +16,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -226,19 +228,44 @@ func cmdList(args []string) error {
 		specs = kept
 	}
 	if *asJSON {
+		cfg, err := loadConfig(root)
+		if err != nil {
+			return err
+		}
+		serving := make([]bool, len(specs))
+		var probes sync.WaitGroup
+		for i, spec := range specs {
+			probes.Add(1)
+			go func(i int, spec *modelSpec) {
+				defer probes.Done()
+				alias, key := spec.id, cfg.APIKey
+				if spec.rt == runtimeKev {
+					alias, key = kevAlias, ""
+				}
+				serving[i] = contains(servedModels(spec.port, key), alias)
+			}(i, spec)
+		}
+		probes.Wait()
 		enc := json.NewEncoder(os.Stdout)
-		for _, spec := range specs {
+		for i, spec := range specs {
 			fit, _ := fitLabel(spec, memory)
 			enc.Encode(struct {
 				ID        string `json:"id"`
+				Name      string `json:"name"`
 				Kind      string `json:"kind"`
+				Runtime   string `json:"runtime"`
 				Size      int64  `json:"bytes"`
+				Partial   int64  `json:"partialBytes"`
 				Fit       string `json:"fit"`
 				Installed bool   `json:"installed"`
+				Serving   bool   `json:"serving"`
+				Port      int    `json:"port"`
 				Repo      string `json:"repo"`
 				Revision  string `json:"revision"`
 				Summary   string `json:"summary"`
-			}{spec.id, spec.kind.String(), spec.sizeBytes(), fit, modelInstalled(root, spec), spec.repo, spec.model.revision, spec.summary})
+			}{spec.id, spec.name, spec.kind.String(), spec.rt.String(), spec.sizeBytes(), modelPartialBytes(root, spec), fit,
+				modelInstalled(root, spec), serving[i], spec.port,
+				spec.repo, spec.model.revision, spec.summary})
 		}
 		return nil
 	}
@@ -286,21 +313,27 @@ func cmdPull(ctx context.Context, args []string) error {
 		}
 	}
 	set := flag.NewFlagSet("pull", flag.ExitOnError)
+	asEvents := set.Bool("events", false, "one JSON event per line on stdout")
 	set.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: fornax pull <model>   (or hf:Org/Repo/File.gguf, ollama:<name>[:<tag>])")
+		fmt.Fprintln(os.Stderr, "usage: fornax pull [--events] <model>   (or hf:Org/Repo/File.gguf, ollama:<name>[:<tag>])")
 	}
 	set.Parse(args)
 	if set.NArg() < 1 {
 		return fmt.Errorf("usage: fornax pull <model>…")
 	}
+	if *asEvents {
+		enableEvents()
+	}
 	for _, id := range set.Args() {
 		spec, eng, err := resolve(id)
+		if err == nil {
+			err = pull(ctx, spec, eng)
+		}
 		if err != nil {
+			emit("error", map[string]any{"model": id, "message": err.Error()})
 			return err
 		}
-		if err := pull(ctx, spec, eng); err != nil {
-			return err
-		}
+		emit("installed", map[string]any{"model": spec.id})
 	}
 	return nil
 }
@@ -645,8 +678,10 @@ func cmdRun(ctx context.Context, args []string) error {
 	port := set.Int("port", 0, "loopback port to serve on (default: the model's catalog port)")
 	ctxSize := set.Int("ctx-size", contextWindow, "context window passed to llama-server")
 	noConnect := set.Bool("no-connect", false, "do not register the running server with Earshot")
+	idle := set.Duration("idle", 0, "stop after this long without a request, e.g. 20m (default: never)")
+	asEvents := set.Bool("events", false, "one JSON event per line on stdout; stops when the reader goes away")
 	set.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: fornax run <model> [-port N] [-ctx-size N] [-no-connect]")
+		fmt.Fprintln(os.Stderr, "usage: fornax run <model> [-port N] [-ctx-size N] [-idle 20m] [-no-connect] [--events]")
 	}
 	// `run <model> -flags` reads naturally; flag.Parse needs flags first.
 	var id string
@@ -658,11 +693,22 @@ func cmdRun(ctx context.Context, args []string) error {
 		if set.NArg() == 1 {
 			id = set.Arg(0)
 		} else {
-			return fmt.Errorf("usage: fornax run <model> [-port N] [-ctx-size N] [-no-connect]")
+			return fmt.Errorf("usage: fornax run <model> [-port N] [-ctx-size N] [-idle 20m] [-no-connect] [--events]")
 		}
 	} else if set.NArg() > 0 {
-		return fmt.Errorf("usage: fornax run <model> [-port N] [-ctx-size N] [-no-connect]")
+		return fmt.Errorf("usage: fornax run <model> [-port N] [-ctx-size N] [-idle 20m] [-no-connect] [--events]")
 	}
+	if *asEvents {
+		enableEvents()
+	}
+	err := serveModel(ctx, id, *port, *ctxSize, *noConnect, *idle)
+	if err != nil {
+		emit("error", map[string]any{"message": err.Error()})
+	}
+	return err
+}
+
+func serveModel(ctx context.Context, id string, port, ctxSize int, noConnect bool, idle time.Duration) error {
 	spec, eng, err := resolve(id)
 	if err != nil {
 		return err
@@ -674,16 +720,17 @@ func cmdRun(ctx context.Context, args []string) error {
 		return fmt.Errorf("%s speaks, it does not serve — `fornax say %s \"text\"`", spec.id, spec.id)
 	}
 	servePort := spec.port
-	if *port != 0 {
-		servePort = *port
+	if port != 0 {
+		servePort = port
 	}
 	root := home()
 	if err := pull(ctx, spec, eng); err != nil {
 		return err
 	}
 	if spec.rt == runtimeApple {
-		return runApple(ctx, root, spec, servePort, *ctxSize != contextWindow, *noConnect)
+		return runApple(ctx, root, spec, servePort, ctxSize != contextWindow, noConnect, idle)
 	}
+	emit("stage", map[string]any{"stage": "verifying", "model": spec.id})
 	verifying := spin("verifying " + spec.id)
 	if err := rehash(root, spec); err != nil {
 		verifying.stop("")
@@ -696,21 +743,30 @@ func cmdRun(ctx context.Context, args []string) error {
 	var cmd *exec.Cmd
 	var key string
 	serverName := "llama-server"
+	logPath := ""
+	if events != nil {
+		logPath = serverLog(root)
+	}
+	emit("stage", map[string]any{"stage": "loading", "model": spec.id})
 	if spec.rt == runtimeKev {
 		serverName = "kev.serve"
-		if *ctxSize != contextWindow {
+		if ctxSize != contextWindow {
 			fmt.Fprintln(os.Stderr, "note: -ctx-size is ignored for kev models")
 		}
-		if *noConnect {
+		if noConnect {
 			fmt.Fprintln(os.Stderr, "note: -no-connect is ignored for kev models (no Earshot route)")
 		}
-		cmd, err = spawnKev(root, spec, servePort, "")
+		if idle > 0 {
+			fmt.Fprintln(os.Stderr, "note: -idle is ignored for kev models (no activity counters)")
+			idle = 0
+		}
+		cmd, err = spawnKev(root, spec, servePort, logPath)
 	} else {
 		key, err = ensureKey(root)
 		if err != nil {
 			return err
 		}
-		cmd, err = spawnServer(root, eng, spec, servePort, *ctxSize, "")
+		cmd, err = spawnServer(root, eng, spec, servePort, ctxSize, logPath)
 	}
 	if err != nil {
 		return err
@@ -726,24 +782,79 @@ func cmdRun(ctx context.Context, args []string) error {
 		killAndReap(cmd, exited)
 		return err
 	}
-	url := endpointURL(servePort)
-	fmt.Printf("\n%s %s\n", markOK(), bold(spec.name)+" is serving")
-	fmt.Printf("    %s %s\n", dim("url:"), cyan(url))
-	if spec.rt == runtimeKev {
-		fmt.Println(kevBlock(url))
-	} else if *noConnect {
-		fmt.Println(pasteBlock(url, key, spec.id))
+	probe := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{Proxy: nil}}
+	return holdServing(ctx, &serving{
+		spec: spec, port: servePort, key: key, noConnect: noConnect, idle: idle,
+		process: serverName, exited: exited, stop: func() { killAndReap(cmd, exited) },
+		sample: func() (string, bool) { return metricsFingerprint(probe, servePort, key) },
+	})
+}
+
+// A model that is up: announce it, then hold until something ends it.
+type serving struct {
+	spec      *modelSpec
+	port      int
+	key       string
+	noConnect bool
+	idle      time.Duration
+	process   string
+	exited    <-chan error
+	stop      func()
+	sample    func() (string, bool)
+}
+
+func holdServing(ctx context.Context, s *serving) error {
+	url := endpointURL(s.port)
+	if events != nil {
+		earshot := "skipped"
+		if s.spec.rt != runtimeKev && !s.noConnect {
+			switch result, _ := connectEarshot(url, s.key); result {
+			case connectRegistered:
+				earshot = "connected"
+			case connectUnavailable:
+				earshot = "refused"
+			default:
+				earshot = "absent"
+			}
+		}
+		emit("ready", map[string]any{"model": s.spec.id, "url": url, "port": s.port, "earshot": earshot})
 	} else {
-		reportConnect(url, key, spec.id)
+		fmt.Printf("\n%s %s\n", markOK(), bold(s.spec.name)+" is serving")
+		fmt.Printf("    %s %s\n", dim("url:"), cyan(url))
+		switch {
+		case s.spec.rt == runtimeKev:
+			fmt.Println(kevBlock(url))
+		case s.noConnect:
+			fmt.Println(pasteBlock(url, s.key, s.spec.id))
+		default:
+			reportConnect(url, s.key, s.spec.id)
+		}
+		if s.idle > 0 {
+			fmt.Println(dim(fmt.Sprintf("\nstops after %s without a request · ctrl-c to stop now", s.idle)))
+		} else {
+			fmt.Println(dim("\nctrl-c to stop"))
+		}
 	}
-	fmt.Println(dim("\nctrl-c to stop"))
+	done := make(chan struct{})
+	defer close(done)
+	go heartbeat(done)
 	select {
 	case <-ctx.Done():
 		fmt.Fprintln(os.Stderr, dim("stopping…"))
-		killAndReap(cmd, exited)
+		s.stop()
+		emit("stopped", map[string]any{"model": s.spec.id, "reason": "signal"})
 		return nil
-	case status := <-exited:
-		return fmt.Errorf("%s exited: %v", serverName, status)
+	case <-supervisorGone():
+		s.stop()
+		return nil
+	case <-idleAfter(s.idle, idlePoll, s.sample, done):
+		fmt.Fprintln(os.Stderr, dim(fmt.Sprintf("no requests for %s — stopping", s.idle)))
+		s.stop()
+		emit("stopped", map[string]any{"model": s.spec.id, "reason": "idle"})
+		return nil
+	case status := <-s.exited:
+		s.stop()
+		return fmt.Errorf("%s exited: %v", s.process, status)
 	}
 }
 

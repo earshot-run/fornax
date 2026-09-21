@@ -24,6 +24,13 @@ func newProgress(label string, total int64) *progressBar {
 
 func (p *progressBar) set(done int64) {
 	now := time.Now()
+	if events != nil {
+		if done >= p.total || now.Sub(p.last) >= progressEvery {
+			p.last = now
+			emit("progress", map[string]any{"label": p.label, "done": done, "total": p.total})
+		}
+		return
+	}
 	elapsed := now.Sub(p.started).Seconds()
 	if done >= p.total && elapsed < 1 {
 		fmt.Fprintf(os.Stderr, "\r\x1b[K%s %6s — done\n", p.label, humanSize(done))

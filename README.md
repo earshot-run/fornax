@@ -62,7 +62,7 @@ model inside macOS.
 
 | Command | What it does |
 | --- | --- |
-| `fornax run <model>` | Serve on loopback, register with Earshot; Ctrl-C stops |
+| `fornax run <model>` | Serve on loopback, register with Earshot; Ctrl-C stops. `-idle 20m` stops an unused server; `--events` emits one JSON line per stage for supervisors |
 | `fornax ps` | Which catalog models are serving right now |
 | `fornax connect <model>` | Register an already-running model's server with Earshot |
 

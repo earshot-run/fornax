@@ -65,6 +65,10 @@ func engineBinary(root string, spec *engineSpec, rel string) string {
 	return filepath.Join(engineDir(root), filepath.FromSlash(rel))
 }
 
+func serverLog(root string) string {
+	return filepath.Join(root, "server.log")
+}
+
 func keyPath(root string) string {
 	return filepath.Join(root, keyFile)
 }

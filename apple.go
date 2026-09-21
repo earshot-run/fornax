@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -272,6 +273,7 @@ type appleServer struct {
 	ln     net.Listener
 	log    *os.File
 	mu     sync.Mutex // guards bridge respawn
+	served atomic.Int64
 }
 
 func (s *appleServer) ensureBridge() (*appleBridge, error) {
@@ -377,6 +379,8 @@ func appleText(content any) (string, error) {
 }
 
 func (s *appleServer) chatCompletions(w http.ResponseWriter, r *http.Request) {
+	s.served.Add(1)
+	defer s.served.Add(1)
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": map[string]any{"message": "POST only"}})
 		return
@@ -520,7 +524,7 @@ func withApple(ctx context.Context, root string, spec *modelSpec, fn func(url, k
 // `run apple-fm`: the adapter serves in the foreground until Ctrl-C, same
 // shape as the llama path in cmdRun — waitReady, panel, then babysit the
 // bridge process.
-func runApple(ctx context.Context, root string, spec *modelSpec, port int, ctxIgnored, noConnect bool) error {
+func runApple(ctx context.Context, root string, spec *modelSpec, port int, ctxIgnored, noConnect bool, idle time.Duration) error {
 	if ctxIgnored {
 		fmt.Fprintln(os.Stderr, "note: -ctx-size is ignored for apple-fm (the OS manages context)")
 	}
@@ -531,8 +535,9 @@ func runApple(ctx context.Context, root string, spec *modelSpec, port int, ctxIg
 	if err := portFree(port); err != nil {
 		return err
 	}
+	emit("stage", map[string]any{"stage": "loading", "model": spec.id})
 	loading := spin("loading " + spec.id)
-	srv, err := startAppleServer(root, spec, port, key, "")
+	srv, err := startAppleServer(root, spec, port, key, serverLog(root))
 	if err != nil {
 		loading.stop("")
 		return err
@@ -543,27 +548,13 @@ func runApple(ctx context.Context, root string, spec *modelSpec, port int, ctxIg
 		return err
 	}
 	loading.stop("")
-	url := endpointURL(port)
-	fmt.Printf("\n%s %s\n", markOK(), bold(spec.name)+" is serving")
-	fmt.Printf("    %s %s\n", dim("url:"), cyan(url))
-	if noConnect {
-		fmt.Println(pasteBlock(url, key, spec.id))
-	} else {
-		reportConnect(url, key, spec.id)
-	}
-	fmt.Println(dim("\nctrl-c to stop"))
-	select {
-	case <-ctx.Done():
-		fmt.Fprintln(os.Stderr, dim("stopping…"))
-		srv.shutdown()
-		return nil
-	case status := <-srv.bridge.exited:
-		srv.shutdown()
-		return fmt.Errorf("fm-bridge exited: %v", status)
-	}
+	return holdServing(ctx, &serving{
+		spec: spec, port: port, key: key, noConnect: noConnect, idle: idle,
+		process: "fm-bridge", exited: srv.bridge.exited, stop: srv.shutdown,
+		sample: func() (string, bool) { return fmt.Sprint(srv.served.Load()), true },
+	})
 }
 
-// A latency sample like runKevBench: a few timed non-stream calls.
 func runAppleBench(ctx context.Context, spec *modelSpec, calls int) error {
 	return withServer(ctx, spec, nil, func(url, key string) error {
 		var lat []float64

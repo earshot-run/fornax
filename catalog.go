@@ -63,6 +63,10 @@ const (
 	runtimeSD
 )
 
+func (r runtimeKind) String() string {
+	return [...]string{"llama", "kev", "apple", "sd"}[r]
+}
+
 type filePin struct {
 	file     string
 	revision string

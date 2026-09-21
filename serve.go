@@ -162,6 +162,8 @@ func spawnServer(root string, eng *engineSpec, spec *modelSpec, port int, ctxSiz
 		"--jinja",
 		"--api-key-file", keyPath(root),
 		"--no-ui",
+		// Monotonic counters `run -idle` reads; behind the same key.
+		"--metrics",
 	}
 	if spec.mmproj != nil {
 		args = append(args, "--mmproj", filePath(root, spec, spec.mmproj))
