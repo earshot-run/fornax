@@ -29,18 +29,18 @@ FORNAX_LIVE=1 go test -run 'TestCompareLive|TestSchemaLive|TestEmbedLive'
 FORNAX_LIVE_DRAW=1 go test -run TestDrawLive -timeout 30m   # pulls ~7 GB
 ```
 
-## Rules of the road
+## Conventions
 
-- **Pins or it didn't happen.** Every fetched artifact carries an immutable
-  revision, exact byte count and SHA-256 (`filePin`/`engineSpec`). Nothing
-  runs before it verifies; weights re-hash before every spawn.
-- **stdout is the payload.** Status, spinners and progress go to stderr;
-  `fornax ask x "…" | jq` must stay clean. Styling is ANSI-on-TTY only —
-  `NO_COLOR`, `TERM=dumb` and pipes get plain aligned text (see `ui.go`).
-- **Loopback only.** Servers bind 127.0.0.1 and require the generated key
+- Every fetched artifact carries an immutable revision, exact byte count and
+  SHA-256 (`filePin`/`engineSpec`). Verify before install; weights re-hash
+  before every spawn.
+- Status, spinners and progress go to stderr; stdout carries only the
+  command's output so pipes stay clean. Styling is TTY-only — `NO_COLOR`,
+  `TERM=dumb` and pipes get plain text (see `ui.go`).
+- Servers bind 127.0.0.1 and require the generated key
   (`~/.fornax/server.key`). Child processes get a scrubbed environment.
-- **Fail clean off-platform.** A runtime that can't work here errors at
-  `resolve()` with the actual reason, not a panic halfway through a download.
+- A runtime that cannot run on this OS/arch fails at `resolve()` with the
+  reason, not partway through a download.
 
 ## Adding a catalog model
 

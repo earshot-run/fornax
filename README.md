@@ -84,7 +84,7 @@ and offers the model in the agent's picker. Older daemons without that route,
 or no daemon at all, get a copy-paste block instead — connecting in Settings
 never needs a token.
 
-## What it trusts
+## Verification
 
 Every artifact is pinned in source: each engine release and each weights file
 (plus `mmproj` projectors and `hf:` customs, pinned at add time) carries an
@@ -117,12 +117,12 @@ require a generated API key (`~/.fornax/server.key`, mode 600).
 | `qwen3-1.7b` | text | 1.7 GB | fastest replies; modest hardware |
 | `qwen3-4b` | text | 2.3 GB | a small local agent model for ordinary Macs |
 | `qwen3-8b` | text | 4.7 GB | sharper answers on 16 GB or more |
-| `qwen3-14b` | text | 8.4 GB | the sharpest local take; wants 24 GB or more |
+| `qwen3-14b` | text | 8.4 GB | the largest model in the catalog; wants 24 GB or more |
 | `qwen2.5-vl-3b` | vision | 2.6 GB | reads screenshots, photos and documents |
 | `ultravox-1b` | audio | 2.0 GB | hears audio takes; transcribes and answers |
 | `kev-0.6b` | decision | ~3 GB | typed questions → probabilities; fastest kev |
 | `kev-4b` | decision | ~10 GB | best accuracy per byte; the kev to start with |
-| `kev-8b` | decision | ~18 GB | sharpest kev answers; wants a bigger machine |
+| `kev-8b` | decision | ~18 GB | largest kev; wants a bigger machine |
 | `apple-fm` | text | os | Apple's on-device model; needs Apple Silicon on macOS 26+ |
 | `nomic-embed` | embed | 80 MB | text → vectors for search and RAG |
 | `sdxl-turbo` | image | 6.5 GB | text to image in a few steps (stable-diffusion.cpp) |
