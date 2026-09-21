@@ -6,8 +6,12 @@ benchmark and clean up — one command at a time, on any machine. Connects to
 
 ```sh
 fornax ask qwen3-4b "explain a doorbell in one sentence"
+fornax ask qwen3-4b --schema answer.json "where is the Eiffel Tower?"
 fornax see qwen2.5-vl-3b screenshot.png "what does this UI say?"
 fornax hear ultravox-1b take.wav
+fornax draw sdxl-turbo "a tiny doorbell icon, flat style" -o icon.png
+fornax embed nomic-embed "text to search over"
+fornax compare qwen3-4b,apple-fm "explain a doorbell in one sentence"
 fornax judge kev-4b --state "charged twice, order never arrived" \
   --ask 'escalate|noul|Needs urgent human attention?' \
   --ask 'team|choice|Which team?|returns|shipping|billing'
@@ -24,7 +28,7 @@ and starts a loopback server if one isn't already running.
 | Command | What it does |
 | --- | --- |
 | `fornax list` | Catalog: sizes, modality, fit on this machine, what is installed |
-| `fornax pull <model>` | Download a model; resumes interrupted downloads |
+| `fornax pull <model>` | Download a model; resumes interrupted downloads. `pull hf:Org/Repo/File.gguf` adds any public GGUF (flags: `--as`, `--kind vision\|audio --mmproj F`, `--rev`) |
 | `fornax rm <model>` | Delete a model's files and any partial download |
 | `fornax clean` | Remove interrupted downloads, stale staging and old server logs (`-all` wipes everything) |
 | `fornax doctor` | What this machine can run; engine, keys and Earshot status |
@@ -33,12 +37,15 @@ and starts a loopback server if one isn't already running.
 
 | Command | What it does |
 | --- | --- |
-| `fornax ask <model> [prompt]` | One prompt, one streamed answer (or pipe the prompt on stdin) |
+| `fornax ask <model> [prompt]` | One prompt, one streamed answer (or pipe the prompt on stdin). `--json` constrains to a JSON object; `--schema file\|-` pins a JSON Schema |
 | `fornax chat <model>` | Interactive conversation with history (`/exit`, `/clear`) |
 | `fornax see <model> <image> [question]` | Ask a vision model about a png/jpg/webp/gif |
 | `fornax hear <model> <audio> [question]` | Ask an audio model about a take; transcribes by default |
+| `fornax draw <model> "prompt"` | Generate an image — `-o`, `-steps`, `-seed`, `-size WxH`, `-neg` |
+| `fornax embed <model> [text]` | Turn text into a vector — one-line JSON on stdout |
+| `fornax compare <m1,m2,…> "prompt"` | Same prompt to several models, replies + speed side by side |
 | `fornax test <model>` | Load it, run a prompt, report speed |
-| `fornax bench <model>` | `llama-bench` on the weights (or kev latency over repeated calls) |
+| `fornax bench <model>` | `llama-bench` on the weights (or median request latency for kev/apple/embed) |
 | `fornax judge <model> --state "…" --ask 'id|type|question|opts…'` | Typed questions → calibrated probabilities (kev / TypeSafe API) |
 
 **Run models**
@@ -108,6 +115,8 @@ environment and requires a generated loopback API key
 | `kev-4b` | decision | ~10 GB | best accuracy per byte; the kev to start with |
 | `kev-8b` | decision | ~18 GB | sharpest kev answers; wants a bigger machine |
 | `apple-fm` | text | os | Apple's on-device model; needs Apple Silicon on macOS 26+ |
+| `nomic-embed` | embed | 80 MB | text → vectors for search and RAG |
+| `sdxl-turbo` | image | 6.5 GB | text to image in a few steps (stable-diffusion.cpp) |
 
 Text models are `Qwen/Qwen3-*-GGUF`; vision is `ggml-org/Qwen2.5-VL-3B` and
 audio is `ggml-org/ultravox-v0_5-llama-3_2-1b` — all pinned revisions on
@@ -138,6 +147,18 @@ System Settings, and `swiftc` (Xcode Command Line Tools) for the one-time
 bridge compile. Token counts in `test`/`bench` are estimates (~4 chars/token)
 — the framework doesn't expose them. Text only: `see`, `hear` and `judge`
 don't apply.
+
+`sdxl-turbo` runs on a pinned stable-diffusion.cpp build (`sd-cli`,
+foreground — no server) and ships engine binaries for macOS arm64, Linux
+x86_64 and Windows x86_64 only. `nomic-embed` is served by the same pinned
+llama.cpp with `--embeddings`, so `run`/`ps`/`connect` work on it too.
+
+Custom models: `fornax pull hf:Org/Repo/File.gguf` (or paste a
+huggingface.co blob/resolve URL) resolves the pin at fetch time — the LFS
+sha256 and byte size come from HF's own headers — saves the entry to
+`~/.fornax/custom.json` and installs through the same verify path. The id
+sticks for `ask`/`run`/`rm`/`clean` like any catalog model; `--as` names it,
+`--kind vision|audio --mmproj <file>` adds a projector.
 
 ## License
 

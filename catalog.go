@@ -23,6 +23,8 @@ const (
 	modalVision
 	modalAudio
 	modalDecision
+	modalImage
+	modalEmbed
 )
 
 func (m modality) String() string {
@@ -33,6 +35,10 @@ func (m modality) String() string {
 		return "audio"
 	case modalDecision:
 		return "decision"
+	case modalImage:
+		return "image"
+	case modalEmbed:
+		return "embed"
 	}
 	return "text"
 }
@@ -40,13 +46,15 @@ func (m modality) String() string {
 // What serves the model. runtimeLlama is the pinned llama.cpp binary;
 // runtimeKev is the python kev.serve app (see kev.go); runtimeApple is the
 // on-device Foundation Models framework behind a compiled Swift bridge
-// (see apple.go).
+// (see apple.go). runtimeSD is a pinned stable-diffusion.cpp binary — a
+// foreground image generator, not a server (see draw.go).
 type runtimeKind int
 
 const (
 	runtimeLlama runtimeKind = iota
 	runtimeKev
 	runtimeApple
+	runtimeSD
 )
 
 type filePin struct {
@@ -287,13 +295,14 @@ var models = []modelSpec{
 	},
 }
 
+// Catalog entries first, then anything saved in ~/.fornax/custom.json.
 func model(id string) *modelSpec {
 	for i := range models {
 		if models[i].id == id {
 			return &models[i]
 		}
 	}
-	return nil
+	return customSpec(home(), id)
 }
 
 func engine() *engineSpec {
@@ -403,9 +412,9 @@ func humanSize(bytes int64) string {
 }
 
 func unknownModel(id string) error {
-	known := make([]string, 0, len(models))
+	var known []string
 	var near string
-	for _, spec := range models {
+	for _, spec := range allSpecs(home()) {
 		known = append(known, spec.id)
 		if near == "" && (strings.HasPrefix(spec.id, id) || strings.Contains(spec.id, id)) {
 			near = spec.id

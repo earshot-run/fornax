@@ -280,8 +280,7 @@ func runPs() error {
 		return err
 	}
 	any := false
-	for i := range models {
-		spec := &models[i]
+	for _, spec := range allSpecs(root) {
 		alias, key := spec.id, cfg.APIKey
 		if spec.rt == runtimeKev {
 			alias, key = kevAlias, ""
@@ -362,8 +361,8 @@ func runClean(all bool) error {
 		}
 	}
 	if all {
-		for i := range models {
-			dir := modelDir(root, &models[i])
+		for _, spec := range allSpecs(root) {
+			dir := modelDir(root, spec)
 			if _, err := os.Stat(dir); err == nil {
 				freed += dirSize(dir)
 				if os.RemoveAll(dir) == nil {
@@ -385,6 +384,7 @@ func runClean(all bool) error {
 		if kevErr == nil {
 			fmt.Println("note: the shared Hugging Face cache (~/.cache/huggingface) is left alone")
 		}
+		os.Remove(filepath.Join(root, customFile))
 	}
 	if len(removed) == 0 {
 		fmt.Println(dim("nothing to clean"))

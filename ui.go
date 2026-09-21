@@ -41,6 +41,7 @@ func green(s string) string   { return style(s, "32") }
 func yellow(s string) string  { return style(s, "33") }
 func cyan(s string) string    { return style(s, "36") }
 func magenta(s string) string { return style(s, "35") }
+func blue(s string) string    { return style(s, "34") }
 
 func markOK() string   { return green("●") }
 func markIdle() string { return dim("○") }

@@ -42,12 +42,22 @@ type chatReply struct {
 
 // One non-streaming completion. `content` is a plain string or a parts array.
 func chatOnce(ctx context.Context, url, key, model string, messages []message, maxTokens int) (*chatReply, error) {
-	body, _ := json.Marshal(map[string]any{
+	return chatOnceFull(ctx, url, key, model, messages, maxTokens, nil)
+}
+
+// chatOnce with extra request-body fields merged in — response_format and
+// friends for structured output. extra keys override the defaults.
+func chatOnceFull(ctx context.Context, url, key, model string, messages []message, maxTokens int, extra map[string]any) (*chatReply, error) {
+	req := map[string]any{
 		"model":      model,
 		"messages":   messages,
 		"max_tokens": maxTokens,
 		"stream":     false,
-	})
+	}
+	for k, v := range extra {
+		req[k] = v
+	}
+	body, _ := json.Marshal(req)
 	resp, err := post(ctx, url+"/chat/completions", key, body)
 	if err != nil {
 		return nil, err

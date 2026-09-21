@@ -22,7 +22,7 @@ func TestEveryPinIsComplete(t *testing.T) {
 				t.Errorf("%s: incomplete pin for %s", spec.id, pin.file)
 			}
 		}
-		if spec.port <= 1024 {
+		if spec.rt != runtimeSD && spec.port <= 1024 {
 			t.Errorf("%s: port %d is not usable", spec.id, spec.port)
 		}
 	}
@@ -47,7 +47,7 @@ func TestModalityNeedsAProjector(t *testing.T) {
 			if spec.mmproj == nil {
 				t.Errorf("%s: %s model has no projector pin", spec.id, spec.kind)
 			}
-		case modalText, modalDecision:
+		case modalText, modalDecision, modalImage, modalEmbed:
 			if spec.mmproj != nil {
 				t.Errorf("%s: %s model carries a projector", spec.id, spec.kind)
 			}

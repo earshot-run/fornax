@@ -32,7 +32,7 @@ Usage: fornax <command>
 
 Get models:
   list     Catalog: sizes, modality, fit on this machine, what is installed
-  pull     Download a model (and the engine on first run); resumes if cut off
+  pull     Download a model — a catalog id, or hf:Org/Repo/File.gguf for any public GGUF
   rm       Delete a model's files and any partial download
   clean    Remove interrupted downloads and stale staging (-all wipes everything)
   doctor   What this machine can run; engine, keys and Earshot status
@@ -43,8 +43,11 @@ Use models:
   see      Ask a vision model about an image
   hear     Ask an audio model about a take — transcribes by default
   test     Load the model, run a prompt, report speed
-  bench    llama-bench on the weights (kev: median request latency)
+  bench    llama-bench on the weights (kev/apple/embed: median request latency)
   judge    Ask a kev decision model typed questions (TypeSafe API)
+  embed    Turn text into a vector — JSON on stdout
+  compare  Same prompt to several models, side by side
+  draw     Generate an image with a stable-diffusion.cpp model
 
 Run models:
   run      Serve a model on loopback; registers with Earshot. Ctrl-C stops
@@ -88,6 +91,12 @@ func main() {
 		err = cmdBench(ctx, os.Args[2:])
 	case "judge":
 		err = cmdJudge(ctx, os.Args[2:])
+	case "embed":
+		err = cmdEmbed(ctx, os.Args[2:])
+	case "compare":
+		err = cmdCompare(ctx, os.Args[2:])
+	case "draw":
+		err = cmdDraw(ctx, os.Args[2:])
 	case "run":
 		err = cmdRun(ctx, os.Args[2:])
 	case "ps":
@@ -148,6 +157,10 @@ func kindStyled(m modality) func(string) string {
 		return yellow
 	case modalDecision:
 		return green
+	case modalImage:
+		return blue
+	case modalEmbed:
+		return dim
 	}
 	return cyan
 }
@@ -181,6 +194,29 @@ func cmdList() error {
 			status)
 		fmt.Printf("  %s %s\n", cell("", 15, nil), dim(spec.summary))
 	}
+	if store, err := loadCustoms(root); err == nil && len(store.Models) > 0 {
+		fmt.Printf("\n  %s\n", dim("custom"))
+		for i := range store.Models {
+			spec := store.Models[i].spec()
+			var status string
+			switch {
+			case modelInstalled(root, spec):
+				status = markOK() + " installed"
+			case modelPartialBytes(root, spec) > 0:
+				status = yellow("◐") + fmt.Sprintf(" %d%%", modelPartialBytes(root, spec)*100/spec.totalBytes())
+			default:
+				status = markIdle()
+			}
+			fit, fitStyle := fitLabel(spec, memory)
+			fmt.Printf("  %s %s %s %s %s\n",
+				cell(spec.id, 15, bold),
+				cell(spec.kind.String(), 8, kindStyled(spec.kind)),
+				cell(humanSize(spec.sizeBytes()), 7, nil),
+				cell(fit, 12, fitStyle),
+				status)
+			fmt.Printf("  %s %s\n", cell("", 15, nil), dim(spec.summary))
+		}
+	}
 	engineState := "unsupported platform"
 	if engine() != nil {
 		engineState = "supported"
@@ -191,8 +227,15 @@ func cmdList() error {
 }
 
 func cmdPull(ctx context.Context, args []string) error {
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "hf:") || strings.Contains(arg, "huggingface.co/") {
+			return cmdPullHF(ctx, args)
+		}
+	}
 	set := flag.NewFlagSet("pull", flag.ExitOnError)
-	set.Usage = func() { fmt.Fprintln(os.Stderr, "usage: fornax pull <model>") }
+	set.Usage = func() {
+		fmt.Fprintln(os.Stderr, "usage: fornax pull <model>   (or hf:Org/Repo/File.gguf — any public GGUF)")
+	}
 	set.Parse(args)
 	if set.NArg() != 1 {
 		return fmt.Errorf("usage: fornax pull <model>")
@@ -221,6 +264,13 @@ func resolve(id string) (*modelSpec, *engineSpec, error) {
 		}
 		return spec, nil, nil
 	}
+	if spec.rt == runtimeSD {
+		eng := engineSD()
+		if eng == nil {
+			return nil, nil, fmt.Errorf("fornax does not have a pinned stable-diffusion.cpp for %s/%s yet", runtime.GOOS, runtime.GOARCH)
+		}
+		return spec, eng, nil
+	}
 	eng := engine()
 	if eng == nil {
 		return nil, nil, fmt.Errorf("fornax does not have a pinned llama.cpp for %s/%s yet", runtime.GOOS, runtime.GOARCH)
@@ -245,6 +295,13 @@ func pull(ctx context.Context, spec *modelSpec, eng *engineSpec) error {
 		if err := ensureKevRuntime(ctx, root, bar.set); err != nil {
 			return err
 		}
+	}
+	if spec.rt == runtimeSD && !sdInstalled(root, eng) {
+		bar := newProgress("sd engine", eng.bytes)
+		if err := ensureSDEngine(ctx, root, eng, bar.set); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "%s engine stable-diffusion.cpp %s installed\n", green("✓"), sdVersion)
 	}
 	if modelInstalled(root, spec) {
 		fmt.Fprintf(os.Stderr, "%s\n", dim(spec.id+" already installed"))
@@ -291,7 +348,30 @@ func cmdAsk(ctx context.Context, args []string) error {
 	if spec.rt == runtimeKev {
 		return fmt.Errorf("%s answers typed questions, not prompts — use `fornax judge %s`", spec.id, spec.id)
 	}
-	prompt := strings.Join(rest, " ")
+	if spec.kind == modalEmbed {
+		return fmt.Errorf("%s embeds, it does not chat — use `fornax embed %s \"text\"`", spec.id, spec.id)
+	}
+	if spec.kind == modalImage {
+		return fmt.Errorf("%s draws, it does not chat — use `fornax draw %s \"prompt\"`", spec.id, spec.id)
+	}
+	// --json / --schema sit after the model, before the prompt.
+	structured := flag.NewFlagSet("ask", flag.ExitOnError)
+	jsonOut := structured.Bool("json", false, "constrain the reply to a JSON object")
+	schemaPath := structured.String("schema", "", "JSON Schema file to constrain the reply ('-' reads stdin)")
+	structured.Usage = func() { fmt.Fprintln(os.Stderr, "usage: fornax ask <model> [--json|--schema f] [prompt…]") }
+	structured.Parse(rest)
+	if *jsonOut || *schemaPath != "" {
+		prompt := strings.Join(structured.Args(), " ")
+		if prompt == "" {
+			return fmt.Errorf("usage: fornax ask <model> [--json|--schema f] <prompt…>")
+		}
+		jsonFlag := ""
+		if *jsonOut {
+			jsonFlag = "json"
+		}
+		return runAskStructured(ctx, spec, eng, prompt, jsonFlag, *schemaPath)
+	}
+	prompt := strings.Join(structured.Args(), " ")
 	if prompt == "" {
 		if info, err := os.Stdin.Stat(); err == nil && info.Mode()&os.ModeCharDevice != 0 {
 			return fmt.Errorf("usage: fornax ask <model> <prompt…>  (or pipe text on stdin)")
@@ -318,6 +398,12 @@ func cmdChat(ctx context.Context, args []string) error {
 	}
 	if spec.rt == runtimeKev {
 		return fmt.Errorf("%s answers typed questions, not chat — use `fornax judge %s`", spec.id, spec.id)
+	}
+	if spec.kind == modalEmbed {
+		return fmt.Errorf("%s embeds, it does not chat — use `fornax embed %s \"text\"`", spec.id, spec.id)
+	}
+	if spec.kind == modalImage {
+		return fmt.Errorf("%s draws, it does not chat — use `fornax draw %s \"prompt\"`", spec.id, spec.id)
 	}
 	return runChat(ctx, spec, eng)
 }
@@ -363,6 +449,12 @@ func cmdTest(ctx context.Context, args []string) error {
 	if spec.rt == runtimeKev {
 		return runKevTest(ctx, spec)
 	}
+	if spec.kind == modalEmbed {
+		return runEmbedTest(ctx, spec, eng)
+	}
+	if spec.kind == modalImage {
+		return fmt.Errorf("%s draws, it does not chat — `fornax draw %s \"prompt\"`", spec.id, spec.id)
+	}
 	return runTest(ctx, spec, eng)
 }
 
@@ -379,6 +471,12 @@ func cmdBench(ctx context.Context, args []string) error {
 	}
 	if spec.rt == runtimeApple {
 		return runAppleBench(ctx, spec, 5)
+	}
+	if spec.kind == modalEmbed {
+		return runEmbedBench(ctx, spec, eng, 5)
+	}
+	if spec.kind == modalImage {
+		return fmt.Errorf("%s draws — there is no bench for image models; time `fornax draw %s …` instead", spec.id, spec.id)
 	}
 	return runBench(ctx, spec, eng)
 }
@@ -475,6 +573,9 @@ func cmdRun(ctx context.Context, args []string) error {
 	spec, eng, err := resolve(id)
 	if err != nil {
 		return err
+	}
+	if spec.rt == runtimeSD {
+		return fmt.Errorf("%s draws, it does not serve — `fornax draw %s \"prompt\"`", spec.id, spec.id)
 	}
 	servePort := spec.port
 	if *port != 0 {
@@ -580,6 +681,9 @@ func cmdConnect(args []string) error {
 	if spec == nil {
 		return unknownModel(id)
 	}
+	if spec.rt == runtimeSD {
+		return fmt.Errorf("%s draws, it does not serve — `fornax draw %s \"prompt\"`", spec.id, spec.id)
+	}
 	servePort := spec.port
 	if *port != 0 {
 		servePort = *port
@@ -642,12 +746,18 @@ func cmdRm(args []string) error {
 		return unknownModel(set.Arg(0))
 	}
 	dir := modelDir(home(), spec)
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
+	custom := customSpec(home(), spec.id) != nil
+	if _, err := os.Stat(dir); os.IsNotExist(err) && !custom {
 		fmt.Printf("%s %s is not installed\n", markIdle(), spec.id)
 		return nil
 	}
 	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("could not remove %s: %w", spec.name, err)
+	}
+	if custom {
+		if err := dropCustom(home(), spec.id); err != nil {
+			return fmt.Errorf("removed files but could not update %s: %w", customFile, err)
+		}
 	}
 	fmt.Printf("%s %s removed\n", green("✓"), spec.id)
 	if spec.rt == runtimeKev {
@@ -700,8 +810,7 @@ func cmdDoctor() error {
 	} else {
 		row(markIdle(), "key", dim("generated on first run"))
 	}
-	for i := range models {
-		spec := &models[i]
+	for _, spec := range allSpecs(root) {
 		if modelInstalled(root, spec) {
 			alias, key := spec.id, cfg.APIKey
 			if spec.rt == runtimeKev {

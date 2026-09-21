@@ -174,6 +174,9 @@ func spawnServer(root string, eng *engineSpec, spec *modelSpec, port int, ctxSiz
 		// Qwen3 emits thinking traces unless reasoning is off.
 		args = append(args, "--reasoning", "off")
 	}
+	if spec.kind == modalEmbed {
+		args = append(args, "--embeddings")
+	}
 	if runtime.GOOS != "windows" {
 		// The layer count is ignored where there is no offload backend.
 		args = append(args, "--n-gpu-layers", "999")
