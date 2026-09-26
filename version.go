@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -70,6 +71,16 @@ func cmdUpgrade(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
+		if tag != version {
+			ahead, err := mainBuildAhead(ctx, version, tag)
+			if err != nil {
+				return err
+			}
+			if !ahead {
+				fmt.Printf("keeping %s; published main build %s is not newer\n", version, tag)
+				return nil
+			}
+		}
 		api = strings.TrimSuffix(releaseAPI, "/latest") + "/tags/" + tag
 	}
 	rel, err := latestRelease(ctx, api)
@@ -103,7 +114,14 @@ func cmdUpgrade(ctx context.Context, args []string) error {
 }
 
 func latestMainTag(ctx context.Context) (string, error) {
-	body, err := fetchBody(ctx, mainBuildURL)
+	u, err := url.Parse(mainBuildURL)
+	if err != nil {
+		return "", err
+	}
+	query := u.Query()
+	query.Set("check", strconv.FormatInt(time.Now().UnixNano(), 10))
+	u.RawQuery = query.Encode()
+	body, err := fetchBody(ctx, u.String())
 	var payload []byte
 	if err == nil {
 		payload, err = io.ReadAll(io.LimitReader(body, 128))
@@ -122,6 +140,36 @@ func latestMainTag(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("invalid main build version %q", tag)
 	}
 	return tag, nil
+}
+
+func mainBuildAhead(ctx context.Context, installed, candidate string) (bool, error) {
+	api := strings.TrimSuffix(releaseAPI, "/releases/latest") + "/compare/" +
+		strings.TrimPrefix(installed, "main-") + "..." + strings.TrimPrefix(candidate, "main-")
+	body, err := fetchBody(ctx, api)
+	var payload []byte
+	if err == nil {
+		payload, err = io.ReadAll(io.LimitReader(body, openai.MaxBody))
+		body.Close()
+	} else if ghAvailable() {
+		payload, err = exec.CommandContext(ctx, "gh", "api", api).Output()
+	}
+	if err != nil {
+		return false, fmt.Errorf("could not compare main builds: %w", err)
+	}
+	var comparison struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(payload, &comparison); err != nil {
+		return false, err
+	}
+	switch comparison.Status {
+	case "ahead":
+		return true, nil
+	case "behind", "identical", "diverged":
+		return false, nil
+	default:
+		return false, fmt.Errorf("unknown main build comparison %q", comparison.Status)
+	}
 }
 
 func latestRelease(ctx context.Context, api string) (*ghRelease, error) {

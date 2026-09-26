@@ -37,7 +37,7 @@ if [ -z "$TAG" ]; then
 	if [ "$USE_GH" = true ]; then
 		TAG=$(gh release download main-build --repo "$REPO" -p version.txt -O -)
 	else
-		TAG=$(curl -fsSL --retry 3 -H 'Cache-Control: no-cache' "$RELEASES/main-build/version.txt")
+		TAG=$(curl -fsSL --retry 3 -H 'Cache-Control: no-cache' "$RELEASES/main-build/version.txt?check=$(date +%s)")
 	fi
 	SHA=${TAG#main-}
 	case "$SHA" in

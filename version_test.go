@@ -113,6 +113,7 @@ func TestUpgradeChannel(t *testing.T) {
 		name, installed, available, want string
 	}{
 		{"main-new", "main-" + strings.Repeat("f", 40), "main-" + strings.Repeat("a", 40), "available"},
+		{"main-stale", "main-" + strings.Repeat("b", 40), "main-" + strings.Repeat("a", 40), "not newer"},
 		{"main-current", "main-" + strings.Repeat("a", 40), "main-" + strings.Repeat("a", 40), "up to date"},
 		{"stable-new", "v1.0.0", "v1.1.0", "available"},
 		{"stable-older", "v2.0.0", "v1.1.0", "a different release exists"},
@@ -126,10 +127,16 @@ func TestUpgradeChannel(t *testing.T) {
 				mu.Unlock()
 				switch r.URL.Path {
 				case "/main-build/version.txt":
-					if r.Header.Get("Cache-Control") != "no-cache" {
+					if r.Header.Get("Cache-Control") != "no-cache" || r.URL.Query().Get("check") == "" {
 						t.Error("channel lookup can reuse a stale release redirect")
 					}
 					fmt.Fprintln(w, tc.available)
+				case "/compare/" + strings.TrimPrefix(tc.installed, "main-") + "..." + strings.TrimPrefix(tc.available, "main-"):
+					comparison := "ahead"
+					if tc.name == "main-stale" {
+						comparison = "behind"
+					}
+					fmt.Fprintf(w, `{"status":%q}`, comparison)
 				case "/releases/latest", "/releases/tags/" + tc.available:
 					fmt.Fprintf(w, `{"tag_name":%q}`, tc.available)
 				default:
@@ -144,7 +151,13 @@ func TestUpgradeChannel(t *testing.T) {
 			}
 			want := "/releases/latest"
 			if strings.HasPrefix(tc.installed, "main-") {
-				want = "/main-build/version.txt,/releases/tags/" + tc.available
+				want = "/main-build/version.txt"
+				if tc.installed != tc.available {
+					want += ",/compare/" + strings.TrimPrefix(tc.installed, "main-") + "..." + strings.TrimPrefix(tc.available, "main-")
+				}
+				if tc.name != "main-stale" {
+					want += ",/releases/tags/" + tc.available
+				}
 			}
 			mu.Lock()
 			defer mu.Unlock()
