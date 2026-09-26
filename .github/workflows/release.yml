@@ -83,3 +83,11 @@ jobs:
           printf 'Latest successful main build: [%s](https://github.com/%s/releases/tag/%s).\n' \
             "$RELEASE_TAG" "$GITHUB_REPOSITORY" "$RELEASE_TAG" > main-notes.md
           gh release edit main-build --target main --notes-file main-notes.md
+          # version.txt is the only pointer installers follow. Older main-<sha>
+          # prereleases are unreachable after it moves, so drop them here.
+          gh release list --limit 100 --json tagName --jq '.[].tagName' | while read -r tag; do
+            case "$tag" in
+              main-build|"$RELEASE_TAG"|v*) ;;
+              main-*) gh release delete "$tag" --yes --cleanup-tag ;;
+            esac
+          done

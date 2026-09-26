@@ -80,7 +80,8 @@ arm64/x86_64, Linux x86_64/arm64), verifies it against the release's
 then follow its link to the binaries.
 
 CI publishes a commit-named prerelease only after checks pass, then updates
-the `main-build` channel. Each install resolves that channel once so its
+the `main-build` channel and deletes the previous commit-named prerelease.
+Each install resolves that channel once so its
 binary and checksum belong to the same commit, even during publication.
 `fornax version` prints `main-<commit SHA>`. Rerun the installer to move an
 older tagged install onto `main`. To install a specific release instead,
