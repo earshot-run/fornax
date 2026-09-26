@@ -27,7 +27,7 @@ func IsOllamaRef(arg string) bool {
 }
 
 // Resolve maps an arg to a model: a saved id, a built-in, or a fresh
-// hf:/ollama: ref pinned and saved on the spot.
+// hf:/ollama: ref saved on the spot.
 func Resolve(ctx context.Context, arg string) (*catalog.Spec, *catalog.EngineSpec, error) {
 	spec := Model(arg)
 	if spec == nil {
@@ -79,7 +79,7 @@ func LlamaEngine() (*catalog.EngineSpec, error) {
 		return nil, err
 	}
 	if eng == nil {
-		return nil, fmt.Errorf("fornax does not have a pinned llama.cpp for %s/%s yet", runtime.GOOS, runtime.GOARCH)
+		return nil, fmt.Errorf("llama.cpp publishes no build for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
 	return eng, nil
 }
@@ -91,31 +91,25 @@ func Pull(ctx context.Context, spec *catalog.Spec, eng *catalog.EngineSpec) erro
 	if err := paths.ProtectDir(root); err != nil {
 		return err
 	}
-	if spec.Runtime == catalog.Llama && !paths.EngineInstalled(root, eng) {
-		bar := ui.NewProgress("engine", eng.TotalBytes())
-		if err := engine.Ensure(ctx, root, eng, bar.Set); err != nil {
+	if spec.Runtime == catalog.Llama {
+		if err := ensureEngine(ctx, root, eng, "engine"); err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "%s engine llama.cpp %s (%s) installed\n", ui.Green("✓"), catalog.EngineVersion, eng.Backend)
 	}
 	if spec.Runtime == catalog.Kev {
-		bar := ui.NewProgress("kev runtime", kevSource.Bytes)
-		if err := ensureKevRuntime(ctx, root, bar.Set); err != nil {
+		if err := ensureKevRuntime(ctx, root); err != nil {
 			return err
 		}
 	}
 	if spec.Runtime == catalog.Laya {
-		bar := ui.NewProgress("laya runtime", layaSource.Bytes)
-		if err := ensureLayaRuntime(ctx, root, bar.Set); err != nil {
+		if err := ensureLayaRuntime(ctx, root); err != nil {
 			return err
 		}
 	}
-	if spec.Runtime == catalog.SD && !paths.EngineInstalled(root, eng) {
-		bar := ui.NewProgress("sd engine", eng.TotalBytes())
-		if err := engine.Ensure(ctx, root, eng, bar.Set); err != nil {
+	if spec.Runtime == catalog.SD {
+		if err := ensureEngine(ctx, root, eng, "sd engine"); err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "%s engine stable-diffusion.cpp %s (%s) installed\n", ui.Green("✓"), sdVersion, eng.Backend)
 	}
 	if Installed(root, spec) {
 		fmt.Fprintf(os.Stderr, "%s\n", ui.Dim(spec.ID+" already installed"))
@@ -133,5 +127,24 @@ func Pull(ctx context.Context, spec *catalog.Spec, eng *catalog.EngineSpec) erro
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "%s %s installed (%s)\n", ui.Green("✓"), ui.Bold(spec.ID), ui.Dim(ui.HumanSize(spec.TotalBytes())))
+	return nil
+}
+
+// Install eng from upstream's newest release unless it is already here.
+func ensureEngine(ctx context.Context, root string, eng *catalog.EngineSpec, label string) error {
+	if paths.EngineInstalled(root, eng) {
+		return nil
+	}
+	var bar *ui.Progress
+	err := engine.Ensure(ctx, root, eng, func(done, total int64) {
+		if bar == nil {
+			bar = ui.NewProgress(label, total)
+		}
+		bar.Set(done)
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "%s engine %s %s (%s) installed\n", ui.Green("✓"), eng.Name, paths.EngineRelease(root, eng), eng.Backend)
 	return nil
 }

@@ -1,10 +1,10 @@
 package main
 
-// `imagine` and `animate` — one-shot image generation through a pinned stable-diffusion.cpp
-// build (sd-cli), the same pinned-engine + pinned-weights pattern as the
-// llama.cpp path. sd-cli is a foreground process, not a server: prompt in,
-// PNG out, exit. It unpacks beside the llama engine under engine/<tag> so
-// the two never share a dir or a receipt.
+// `imagine` and `animate` — one-shot image generation through a
+// stable-diffusion.cpp build (sd-cli), installed like the llama.cpp engine.
+// sd-cli is a foreground process, not a server: prompt in, PNG out, exit. It
+// unpacks beside the llama engine under engine/sd-<backend> so the two
+// never share a dir or a receipt.
 
 import (
 	"context"
@@ -31,7 +31,7 @@ func drawSize(s string) (int, int, error) {
 	return width, height, nil
 }
 
-// fornax pins the engine and nothing else: an image or video model is one
+// fornax ships the engine and nothing else: an image or video model is one
 // the operator added with `pull hf:`, with the files and engine arguments
 // they saved beside it. A flag given here is passed after those, so it wins.
 func cmdImagine(ctx context.Context, args []string) error {

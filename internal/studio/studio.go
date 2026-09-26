@@ -712,7 +712,7 @@ func (s *studio) next(ctx context.Context) (*studioJob, context.Context) {
 	for _, job := range s.jobs {
 		if job.State == jobQueued {
 			jobCtx, cancel := context.WithCancel(ctx)
-			job.State, job.Phase, job.Started, job.cancel = jobRunning, "verifying", time.Now(), cancel
+			job.State, job.Phase, job.Started, job.cancel = jobRunning, "preparing", time.Now(), cancel
 			s.notifyLocked()
 			return job, jobCtx
 		}

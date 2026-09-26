@@ -1,23 +1,57 @@
 package modelrt
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
 
-func TestSDEnginePinsAreComplete(t *testing.T) {
+func TestSDEngineBuildsAreComplete(t *testing.T) {
 	for platform, variants := range sdEngines {
 		for _, eng := range variants {
-			if len(eng.SHA256) != 64 || eng.Bytes <= 0 || eng.Binary == "" || eng.DirName == "" || eng.Backend == "" {
-				t.Errorf("%s %s: incomplete sd engine pin", platform, eng.Archive)
+			if (eng.Repo == "" || eng.Asset == "") == (eng.Image == "" || eng.ImageLayer == "") {
+				t.Errorf("%s %s: an sd build comes from exactly one of a release asset or an image", platform, eng.DirName)
 			}
-			if !strings.HasSuffix(eng.URL, eng.Archive) {
-				t.Errorf("%s: url does not end with the pinned archive", eng.Archive)
+			if eng.Binary == "" || eng.DirName == "" || eng.Backend == "" {
+				t.Errorf("%s %s: incomplete sd build", platform, eng.DirName)
 			}
 			for _, part := range eng.Parts {
-				if len(part.SHA256) != 64 || part.Bytes <= 0 || !strings.HasSuffix(part.URL, part.Archive) {
-					t.Errorf("%s: incomplete part %s", eng.Archive, part.Archive)
+				if (part.Repo == "") == (part.PyPI == "") || part.Asset == "" {
+					t.Errorf("%s: part %+v needs one source and a pattern", eng.DirName, part)
 				}
+			}
+		}
+	}
+}
+
+// sd's release names carry the commit and the runner's OS version.
+func TestSDAssetsMatchUpstreamNames(t *testing.T) {
+	want := map[string]string{
+		"darwin/arm64/metal":   "sd-master-2f88688-bin-Darwin-macOS-26.6.2-arm64.zip",
+		"linux/amd64/cpu":      "sd-master-2f88688-bin-Linux-Ubuntu-24.04-x86_64.zip",
+		"linux/amd64/vulkan":   "sd-master-2f88688-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip",
+		"windows/amd64/cpu":    "sd-master-2f88688-bin-win-cpu-x64.zip",
+		"windows/amd64/cuda":   "sd-master-2f88688-bin-win-cuda12-x64.zip",
+		"windows/amd64/vulkan": "sd-master-2f88688-bin-win-vulkan-x64.zip",
+	}
+	release := []string{"sd-master-2f88688-bin-Linux-Ubuntu-24.04-x86_64-rocm-7.14.0.zip", "sd-master-2f88688-bin-win-rocm-7.14.0-x64.zip"}
+	for _, name := range want {
+		release = append(release, name)
+	}
+	for platform, variants := range sdEngines {
+		for _, eng := range variants {
+			name, ok := want[platform+"/"+string(eng.Backend)]
+			if !ok {
+				continue
+			}
+			var got []string
+			for _, candidate := range release {
+				if regexp.MustCompile(eng.Asset).MatchString(candidate) {
+					got = append(got, candidate)
+				}
+			}
+			if len(got) != 1 || got[0] != name {
+				t.Errorf("%s/%s matches %v, want %s", platform, eng.Backend, got, name)
 			}
 		}
 	}

@@ -7,12 +7,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/earshot-run/fornax/internal/catalog"
 	"github.com/earshot-run/fornax/internal/paths"
 	"github.com/earshot-run/fornax/internal/ui"
 )
 
-// Reclaim disk: interrupted downloads, stale staging, tmp writes.
-// `-all` also removes every installed model and the engine.
+// Reclaim disk: interrupted downloads, stale staging, tmp writes, and
+// engine dirs no build installs to any more. `-all` also removes every
+// installed model and the engine.
 func Clean(all bool) error {
 	root := paths.Home()
 	var freed int64
@@ -76,6 +78,27 @@ func Clean(all bool) error {
 			freed += DirSize(dir)
 			if os.RemoveAll(dir) == nil {
 				removed = append(removed, dir+"/")
+			}
+		}
+	}
+	// Builds from before engines were named by backend: engine/b11060,
+	// engine/sd-master-c678dfe-vulkan and the like.
+	if entries, err := os.ReadDir(paths.EnginesDir(root)); err == nil && !all {
+		current := map[string]bool{}
+		for _, table := range []map[string][]*catalog.EngineSpec{catalog.Engines(), sdEngines} {
+			for _, variants := range table {
+				for _, eng := range variants {
+					current[eng.DirName] = true
+				}
+			}
+		}
+		for _, entry := range entries {
+			if entry.IsDir() && !current[entry.Name()] {
+				dir := filepath.Join(paths.EnginesDir(root), entry.Name())
+				freed += DirSize(dir)
+				if os.RemoveAll(dir) == nil {
+					removed = append(removed, dir+"/")
+				}
 			}
 		}
 	}

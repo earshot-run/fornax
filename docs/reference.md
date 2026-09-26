@@ -49,7 +49,7 @@ what agents should read.
 
 | Command | What it does |
 | --- | --- |
-| `fornax show <model>` | Pin card + a look inside the artifact — GGUF metadata (arch, params, quant, context), safetensors header, kev checkpoint |
+| `fornax show <model>` | Model card + a look inside the artifact — GGUF metadata (arch, params, quant, context), safetensors header, kev checkpoint |
 | `fornax search <query>` | GGUF repos on Hugging Face ranked by downloads; single-file repos print the ready `pull hf:` command |
 | `fornax mcp` | MCP server on stdio — agents call ask/see/hear/embed/imagine/say/models as tools |
 | `fornax version` / `upgrade` | Build stamp; check for a newer release |
@@ -116,7 +116,6 @@ fornax run hf:Qwen/Qwen3-4B-GGUF --events -idle 20m      # one JSON event per li
 
 ```json
 {"event":"progress","label":"hf-qwen3-4b","done":251857291,"total":2497280256}
-{"event":"stage","stage":"verifying","model":"hf-qwen3-4b"}
 {"event":"stage","stage":"loading","model":"hf-qwen3-4b"}
 {"event":"ready","model":"hf-qwen3-4b","url":"http://127.0.0.1:7401/v1","port":7401,"earshot":"connected","detail":""}
 {"event":"alive"}
@@ -130,15 +129,15 @@ stops it cleanly. `pull --events` (saved ids, `hf:` and `ollama:` refs alike)
 emits the same `progress`, then `installed` with the model's id and kind, or
 `error`.
 
-## Verification
+## Where things come from
 
-Every artifact is pinned: engine releases and the built-in models carry an
-immutable revision, exact byte count and SHA-256 in source, and every pulled
-model gets the same triple at fetch time — HF serves the LFS sha256 and byte
-count in its own headers, Ollama's manifest digest is the layer's SHA-256.
-Downloads resume through `.part` files, verify before install, and weights
-re-hash before every spawn. `fornax pins` re-checks every saved pin against
-upstream.
+Nothing is pinned. An engine comes from the newest upstream release that
+carries a build for this machine, found when it is first needed; kev and
+laya build from their repos' HEAD; a model downloads from the revision its
+ref names, `main` when it names none. What is installed stays until you
+remove it (`fornax clean`, `rm`), so a later install may get newer upstream
+bits. Downloads resume through `.part` files and take their size from the
+server; there is no hash check.
 Model servers start with a scrubbed environment, bind loopback only, and
 require a generated API key (`~/.fornax/server.key`, mode 600).
 
@@ -146,11 +145,11 @@ require a generated API key (`~/.fornax/server.key`, mode 600).
 
 ```
 ~/.fornax/
-  engine/b11060/…            one unpacked llama.cpp release
-  engine/sd-master-*/…       one unpacked stable-diffusion.cpp release
-  kev/src/…                  pinned kev source + its uv venv
-  laya/src/… + serve.py      pinned laya source, its uv venv, the serve shim
-  models/<id>/<file>         weights + projectors + verified.sha256
+  engine/llama-<backend>/…   one unpacked llama.cpp build; `installed` names its release
+  engine/sd-<backend>/…      one unpacked stable-diffusion.cpp build, likewise
+  kev/src/…                  kev source + its uv venv
+  laya/src/… + serve.py      laya source, its uv venv, the serve shim
+  models/<id>/<file>         weights + projectors
   models/<id>/*.part         resumable downloads
   models/apple-fm/fm-bridge  compiled Swift bridge for apple-fm
   server.key                 loopback API key
@@ -165,8 +164,8 @@ require a generated API key (`~/.fornax/server.key`, mode 600).
 Files over 64 MB download as up to eight parallel byte ranges written in
 place, with a `.part.ranges` sidecar recording each range's progress, so an
 interrupted download resumes range by range; a server that ignores `Range`
-gets the single-stream path. Either way nothing installs until the byte
-count and SHA-256 match the pin.
+gets the single-stream path. Either way nothing installs until the whole
+file has arrived.
 
 A Hugging Face token (`HF_TOKEN`, or the one saved from the studio's Models
 page into `config.json`, mode 600) is sent to `huggingface.co` only, never to
@@ -174,17 +173,20 @@ the CDN it redirects to. It is what unlocks gated repos (accept the model's
 terms on huggingface.co first) and raises Hugging Face's per-account request
 limits; it does not change bandwidth.
 
-Set `HF_ENDPOINT` to an HTTPS mirror origin (e.g. `HF_ENDPOINT=https://hf-mirror.com fornax pull hf:Qwen/Qwen3-4B-GGUF`) when the official Hugging Face host is slow or unreachable. This routes Hugging Face model search, repo listings, pin HEAD requests and model-weight downloads through that origin. It does not rewrite other hosts (engines, Ollama, CDNs, etc.) or saved pin URLs. Only HTTPS origins without a path, query or credentials are accepted; HTTP is allowed for loopback testing. The mirror sees requested model names and file bytes, but **never receives `HF_TOKEN` or the saved token**. Gated/private repos therefore need the official endpoint; unset `HF_ENDPOINT` for those. Pin byte counts and SHA-256 checks still apply to mirror downloads. `fornax pins` audits against the upstream canonical URLs, and token validation still uses huggingface.co. A mirror may be incomplete or out of date; choose one you trust.
+Set `HF_ENDPOINT` to an HTTPS mirror origin (e.g. `HF_ENDPOINT=https://hf-mirror.com fornax pull hf:Qwen/Qwen3-4B-GGUF`) when the official Hugging Face host is slow or unreachable. This routes Hugging Face model search, repo listings, size HEAD requests and model-weight downloads through that origin. It does not rewrite other hosts (engines, Ollama, CDNs, etc.) or saved download URLs. Only HTTPS origins without a path, query or credentials are accepted; HTTP is allowed for loopback testing. The mirror sees requested model names and file bytes, but **never receives `HF_TOKEN` or the saved token**. Gated/private repos therefore need the official endpoint; unset `HF_ENDPOINT` for those. Token validation still uses huggingface.co. A mirror may be incomplete or out of date; choose one you trust.
 
 ## GPUs
 
-Each engine is pinned per accelerator, and fornax picks the build from what
-the machine has: Metal on Apple Silicon; CUDA when an NVIDIA driver is
-present (Linux and Windows, with the CUDA runtime pinned and fetched
-alongside, so no toolkit install); Vulkan for other GPUs, or an NVIDIA card
-whose driver is too old for the CUDA build; the CPU build otherwise.
-stable-diffusion.cpp has no Linux CUDA build upstream, so image and video on
-Linux run through Vulkan. `fornax doctor` shows what was found and which
+Each engine has a build per accelerator, and fornax picks one from what the
+machine has: Metal on Apple Silicon; CUDA when an NVIDIA driver is present
+(Linux, WSL2 and Windows, with the CUDA runtime fetched alongside, so no
+toolkit install); Vulkan for other GPUs, or an NVIDIA card whose driver is
+too old for the CUDA build; the CPU build otherwise. stable-diffusion.cpp
+publishes its Linux CUDA build only inside its container image
+(`ghcr.io/leejet/stable-diffusion.cpp:master-cuda`), so fornax takes the one
+layer holding `sd-cli` from it, plus llama.cpp's CUDA 12 runtime and
+NVIDIA's `nvidia-nccl-cu12` wheel for the libraries the image's base layers
+would have supplied — about 1.1 GB in all. `fornax doctor` shows what was found and which
 build runs; `FORNAX_BACKEND=cpu|cuda|vulkan` forces one. Each build installs
 to its own `engine/` directory, so switching never reuses the wrong one.
 
@@ -201,7 +203,7 @@ overrides it. `search <query>` ranks GGUF repos by downloads.
 Everything lands in `custom.json` with a derived id — `hf:Qwen/Qwen3-4B-GGUF`
 becomes `hf-qwen3-4b` — which `list`/`ask`/`run`/`rm`/`clean` treat like a
 built-in from then on; the same ref resolves offline once saved. `list`
-marks whether each fits your RAM. Served by pinned llama.cpp `b11060`
+marks whether each fits your RAM. Served by llama.cpp's newest release
 (`--mmproj` loads projectors, `--embeddings`/`--reranking` the rest).
 
 Built-ins — the models that can't come from a GGUF repo:
@@ -218,8 +220,8 @@ chatting. Three question types: `noul` (yes/no → the probability of yes),
 `choice` (one of a set → a distribution over the options) and `score`
 (ordered levels, listed low to high → the expected level, its nearest
 label, and the distribution). Both families need
-[uv](https://docs.astral.sh/uv/) and macOS or Linux; the pinned source and
-checkpoint are fetched like every other artifact, and a venv is built once.
+[uv](https://docs.astral.sh/uv/) and macOS or Linux; the source (the repo's
+HEAD) and checkpoint are fetched on first use, and a venv is built once.
 
 kev models are [jaredpalmer/kev](https://github.com/jaredpalmer/kev) — a
 Jev-style decision model (LoRA + readout head on a Qwen3.5 base, Qwen3.8
@@ -238,7 +240,7 @@ laya models are [Convai Innovations'](https://github.com/NandhaKishorM/laya)
 open-weights decision models on ModernBERT (mmBERT for
 `laya-multilingual`) — ~1 GB each with nothing else to download, so they
 are the quick install. Each checkpoint's files (safetensors,
-`rl_agent_config.json`, encoder and tokenizer configs) are pinned from the
+`rl_agent_config.json`, encoder and tokenizer configs) come from the
 `convaiinnovations/laya` HF repo. The pypi package is a library with no
 server, so fornax serves it through an embedded stdlib shim
 (`laya_serve.py`). On the support-message example laya answered in
@@ -275,9 +277,9 @@ bridge compile. Token counts in `test`/`bench` are estimates (~4 chars/token)
 — the framework doesn't expose them. Text only: `see`, `hear` and `judge`
 don't apply.
 
-Image and video run on a pinned stable-diffusion.cpp build (`sd-cli`,
+Image and video run on a stable-diffusion.cpp build (`sd-cli`,
 foreground — no server) with engine binaries for macOS arm64, Linux x86_64
-and Windows x86_64 only. fornax pins that engine and no image or video
+and Windows x86_64 only. fornax ships that engine and no image or video
 model: you add the one you want, with the files and `sd-cli` arguments it
 needs saved beside it, and `imagine`/`animate` run it that way every time.
 
@@ -289,10 +291,10 @@ fornax pull hf:Org/Repo/video.gguf --as my-video --kind video \
 
 `--with <flag>=hf:…` is any `sd-cli` file flag. Weights that come with
 companion files load as `--diffusion-model`; a lone checkpoint loads as `-m`.
-Speech models run through `llama-tts` in the same pinned llama.cpp archive —
+Speech models run through `llama-tts` in the same llama.cpp build —
 foreground, no server — writing a 24 kHz WAV per call; `-voice take.wav`
 clones a voice from a reference take. Embed and rerank models are served by
-the same pinned llama.cpp with `--embeddings`/`--reranking`, so `run`/`ps`/
+the same llama.cpp with `--embeddings`/`--reranking`, so `run`/`ps`/
 `connect` work on them too.
 
 Speech output and reference paths are relative to the directory where you
@@ -300,7 +302,7 @@ invoked fornax, including through MCP. The engine's working directory does
 not change where those files are read or written.
 
 `fornax pull ollama:<name>[:<tag>]` (or an ollama.com/library URL) resolves
-against the Ollama registry: the manifest's layer digest is already the
-weights' SHA-256, so the pin comes straight from the manifest. Models with a
+against the Ollama registry: the manifest's layers are the weights and, when
+there is one, the projector. Models with a
 projector layer (llava-style vision) install it as the `mmproj` and land as
 `vision` kind automatically; `--as`/`--kind` override.

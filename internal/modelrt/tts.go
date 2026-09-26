@@ -1,7 +1,7 @@
 package modelrt
 
 // Text to speech through `llama-tts`, a foreground tool that ships in the
-// same pinned llama.cpp archive as llama-server. Qwen3-TTS clones a voice
+// same llama.cpp build as llama-server. Qwen3-TTS clones a voice
 // from a few seconds of reference audio (--tts-speaker-file).
 
 import (
@@ -19,19 +19,12 @@ import (
 	"github.com/earshot-run/fornax/internal/ui"
 )
 
-// Install a speech model and re-hash its weights: what every llama-tts run
-// needs first.
+// Install a speech model: what every llama-tts run needs first.
 func PrepareSpeech(ctx context.Context, spec *catalog.Spec, eng *catalog.EngineSpec) (string, error) {
 	root := paths.Home()
 	if err := Pull(ctx, spec, eng); err != nil {
 		return "", err
 	}
-	verifying := ui.Spin("verifying " + spec.ID)
-	if err := Rehash(root, spec); err != nil {
-		verifying.Stop("")
-		return "", err
-	}
-	verifying.Stop("")
 	return root, nil
 }
 
@@ -39,7 +32,7 @@ func PrepareSpeech(ctx context.Context, spec *catalog.Spec, eng *catalog.EngineS
 func RunSay(ctx context.Context, root string, eng *catalog.EngineSpec, spec *catalog.Spec, prompt, outPath, voice, lang string, frames int) error {
 	binary := paths.EngineBinary(root, eng, eng.TTS)
 	if info, err := os.Stat(binary); err != nil || info.IsDir() {
-		return fmt.Errorf("the pinned llama.cpp is missing %s — reinstall the engine", eng.TTS)
+		return fmt.Errorf("the installed llama.cpp is missing %s — reinstall the engine", eng.TTS)
 	}
 	toStdout := outPath == "-"
 	work := outPath

@@ -1,25 +1,20 @@
 package catalog
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
 
-func TestEveryPinIsComplete(t *testing.T) {
+func TestEveryModelFileHasAURL(t *testing.T) {
 	for _, spec := range models {
-		for _, pin := range spec.Files() {
-			url := spec.URL(pin)
-			if len(pin.SHA256) != 64 {
-				t.Errorf("%s: sha256 for %s is not 64 hex chars", spec.ID, pin.File)
+		for _, file := range spec.Files() {
+			url := spec.URL(file)
+			if !strings.HasPrefix(url, "https://") || !strings.HasSuffix(url, file.File) {
+				t.Errorf("%s: url %s does not fetch %s", spec.ID, url, file.File)
 			}
-			if !strings.Contains(url, pin.Revision) {
-				t.Errorf("%s: url for %s does not carry the pinned revision", spec.ID, pin.File)
-			}
-			if !strings.HasSuffix(url, pin.File) {
-				t.Errorf("%s: url for %s does not end with the pinned file", spec.ID, pin.File)
-			}
-			if pin.Bytes <= 0 {
-				t.Errorf("%s: incomplete pin for %s", spec.ID, pin.File)
+			if file.Bytes <= 0 {
+				t.Errorf("%s: %s has no listed size", spec.ID, file.File)
 			}
 		}
 		if spec.Runtime != SD && spec.Port <= 1024 {
@@ -57,7 +52,7 @@ func TestModalityNeedsAProjector(t *testing.T) {
 	}
 }
 
-func TestKevPinsPointAtGitHub(t *testing.T) {
+func TestKevTarballsComeFromGitHub(t *testing.T) {
 	for _, spec := range models {
 		if spec.Runtime != Kev {
 			continue
@@ -69,47 +64,90 @@ func TestKevPinsPointAtGitHub(t *testing.T) {
 			t.Errorf("%s: fitBytes should exceed the adapter-only tarball", spec.ID)
 		}
 		if !strings.HasPrefix(spec.Model.URL, "https://github.com/jaredpalmer/kev/releases/") {
-			t.Errorf("%s: kev tarball does not come from the pinned release", spec.ID)
+			t.Errorf("%s: kev tarball does not come from kev's releases", spec.ID)
 		}
 	}
 }
 
-func TestEnginePinsAreComplete(t *testing.T) {
+func TestEngineBuildsAreComplete(t *testing.T) {
 	for platform, variants := range Engines() {
 		if len(variants) == 0 || (variants[0].Backend != CPU && variants[0].Backend != Metal) {
 			t.Errorf("%s: the plain build must come first", platform)
 		}
 		dirs := map[string]bool{}
 		for _, spec := range variants {
-			if len(spec.SHA256) != 64 || spec.Bytes <= 0 || spec.Binary == "" || spec.Bench == "" {
-				t.Errorf("%s %s: incomplete engine pin", platform, spec.Archive)
+			if spec.Repo == "" || spec.Binary == "" || spec.Bench == "" || spec.TTS == "" {
+				t.Errorf("%s %s: incomplete engine build", platform, spec.Asset)
 			}
-			if !strings.HasSuffix(spec.URL, spec.Archive) {
-				t.Errorf("%s: url does not end with the pinned archive", spec.Archive)
+			if _, err := regexp.Compile(spec.Asset); err != nil {
+				t.Errorf("%s: bad asset pattern %s: %v", platform, spec.Asset, err)
 			}
 			if dirs[spec.DirName] {
 				t.Errorf("%s: two builds share the directory %s", platform, spec.DirName)
 			}
 			dirs[spec.DirName] = true
 			if (spec.Backend == CUDA) != (len(spec.Parts) > 0 && spec.MinDriver > 0) {
-				t.Errorf("%s: a CUDA build needs its runtime part and a minimum driver", spec.Archive)
+				t.Errorf("%s: a CUDA build needs its runtime part and a minimum driver", spec.Asset)
 			}
 			for _, part := range spec.Parts {
-				if len(part.SHA256) != 64 || part.Bytes <= 0 || !strings.HasSuffix(part.URL, part.Archive) {
-					t.Errorf("%s: incomplete part %s", spec.Archive, part.Archive)
+				if _, err := regexp.Compile(part.Asset); err != nil || part.Repo == "" {
+					t.Errorf("%s: bad part %+v", spec.Asset, part)
 				}
 			}
 		}
 	}
 }
 
-// A CPU install from before backends existed keeps its directory.
-func TestPlainBuildKeepsTheBareVersionDir(t *testing.T) {
-	if EngineDir(EngineVersion, CPU) != EngineVersion || EngineDir(EngineVersion, Metal) != EngineVersion {
-		t.Error("the plain build moved directories")
+// The patterns pick exactly the build they mean out of a real release.
+func TestEngineAssetsMatchUpstreamNames(t *testing.T) {
+	release := []string{
+		"cudart-llama-b11200-bin-ubuntu-cuda-12.8-x64.tar.gz",
+		"cudart-llama-b11200-bin-ubuntu-cuda-13.4-x64.tar.gz",
+		"cudart-llama-bin-win-cuda-12.4-x64.zip",
+		"llama-b11200-bin-linux-arm64-snapdragon.tar.gz",
+		"llama-b11200-bin-macos-arm64.tar.gz",
+		"llama-b11200-bin-ubuntu-cuda-12.8-x64.tar.gz",
+		"llama-b11200-bin-ubuntu-cuda-13.4-x64.tar.gz",
+		"llama-b11200-bin-ubuntu-vulkan-x64.tar.gz",
+		"llama-b11200-bin-ubuntu-x64.tar.gz",
+		"llama-b11200-bin-win-cuda-12.4-x64.zip",
+		"llama-b11200-bin-win-cpu-x64.zip",
 	}
-	if EngineDir(EngineVersion, CUDA) == EngineVersion {
-		t.Error("the CUDA build shares the plain build's directory")
+	want := map[string]string{
+		"linux/amd64/cpu":       "llama-b11200-bin-ubuntu-x64.tar.gz",
+		"linux/amd64/cuda":      "llama-b11200-bin-ubuntu-cuda-12.8-x64.tar.gz",
+		"linux/amd64/vulkan":    "llama-b11200-bin-ubuntu-vulkan-x64.tar.gz",
+		"darwin/arm64/metal":    "llama-b11200-bin-macos-arm64.tar.gz",
+		"windows/amd64/cpu":     "llama-b11200-bin-win-cpu-x64.zip",
+		"windows/amd64/cuda":    "llama-b11200-bin-win-cuda-12.4-x64.zip",
+		"linux/amd64/cuda/rt":   "cudart-llama-b11200-bin-ubuntu-cuda-12.8-x64.tar.gz",
+		"windows/amd64/cuda/rt": "cudart-llama-bin-win-cuda-12.4-x64.zip",
+	}
+	matches := func(pattern string) []string {
+		var found []string
+		for _, name := range release {
+			if regexp.MustCompile(pattern).MatchString(name) {
+				found = append(found, name)
+			}
+		}
+		return found
+	}
+	for platform, variants := range Engines() {
+		for _, spec := range variants {
+			key := platform + "/" + string(spec.Backend)
+			if name, ok := want[key]; ok {
+				if got := matches(spec.Asset); len(got) != 1 || got[0] != name {
+					t.Errorf("%s matches %v, want %s", key, got, name)
+				}
+			}
+			for _, part := range spec.Parts {
+				if name, ok := want[key+"/rt"]; ok {
+					if got := matches(part.Asset); len(got) != 1 || got[0] != name {
+						t.Errorf("%s runtime matches %v, want %s", key, got, name)
+					}
+				}
+			}
+		}
 	}
 }
 

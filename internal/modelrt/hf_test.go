@@ -36,9 +36,9 @@ func TestHFMirrorMetadata(t *testing.T) {
 	if err != nil || len(files) != 1 || files[0] != "model.gguf" {
 		t.Fatalf("mirror listing = %v, %v", files, err)
 	}
-	pin, err := resolveHFPin(context.Background(), "Org/Repo", "main", files[0])
-	if err != nil || pin == nil || pin.Revision != "abc123" || pin.Bytes != 100 || count != 2 {
-		t.Fatalf("mirror pin = %+v, %v (requests %d)", pin, err, count)
+	size, err := hfFileSize(context.Background(), "Org/Repo", "main", files[0])
+	if err != nil || size != 100 || count != 2 {
+		t.Fatalf("mirror size = %d, %v (requests %d)", size, err, count)
 	}
 }
 
@@ -140,7 +140,7 @@ func TestInferKind(t *testing.T) {
 }
 
 // A repo-only pull lists the repo, picks the quant, attaches the projector
-// and the split parts, pins everything, and saves — a repeat resolves
+// and the split parts, sizes everything, and saves — a repeat resolves
 // offline from the saved entry.
 func TestEnsureHFEndToEnd(t *testing.T) {
 	var listed, heads int
@@ -184,6 +184,9 @@ func TestEnsureHFEndToEnd(t *testing.T) {
 		t.Fatalf("companions = %+v", entry.Companions)
 	}
 	spec := entry.spec()
+	if !strings.Contains(spec.URL(&spec.Model), "/resolve/main/") {
+		t.Fatalf("a ref without a revision downloads %s, want main", spec.URL(&spec.Model))
+	}
 	if spec.Kind != catalog.Vision || spec.MMProj == nil || len(spec.Companions) != 1 {
 		t.Fatalf("spec lost the vision bits: kind=%v mmproj=%v companions=%d",
 			spec.Kind, spec.MMProj, len(spec.Companions))

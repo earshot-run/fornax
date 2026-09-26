@@ -157,9 +157,12 @@ func cmdList(args []string) error {
 	}
 	engineState := "unsupported platform"
 	if eng, err := modelrt.LlamaEngine(); err == nil {
-		engineState = "supported, " + string(eng.Backend)
+		engineState = string(eng.Backend)
+		if release := paths.EngineRelease(root, eng); release != "" {
+			engineState = release + ", " + engineState
+		}
 	}
-	fmt.Printf("\n  %s\n", ui.Dim(fmt.Sprintf("this machine: %s RAM · llama.cpp %s (%s)",
-		ui.HumanSize(memory), catalog.EngineVersion, engineState)))
+	fmt.Printf("\n  %s\n", ui.Dim(fmt.Sprintf("this machine: %s RAM · llama.cpp (%s)",
+		ui.HumanSize(memory), engineState)))
 	return nil
 }

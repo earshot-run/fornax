@@ -19,9 +19,10 @@ FORNAX_LIVE=1 go test -run 'TestCompareLive|TestSchemaLive|TestEmbedLive' .
 
 ## Conventions
 
-- Every fetched artifact carries an immutable revision, exact byte count and
-  SHA-256 (`catalog.Pin`/`catalog.EngineSpec`). Verify before install;
-  weights re-hash before every spawn.
+- Nothing is pinned. Engines come from the newest upstream release that
+  carries the build, python runtimes from their repo's HEAD, models from the
+  revision their ref names (main by default); downloads take their size from
+  the server and are not hash-checked.
 - Status, spinners and progress go to stderr; stdout carries only the
   command's output so pipes stay clean. Styling is TTY-only — `NO_COLOR`,
   `TERM=dumb` and pipes get plain text (see `internal/ui`).
@@ -32,27 +33,24 @@ FORNAX_LIVE=1 go test -run 'TestCompareLive|TestSchemaLive|TestEmbedLive' .
 
 ## Adding a built-in model
 
-There is no model catalog — `hf:`/`ollama:` refs resolve and pin themselves
+There is no model catalog — `hf:`/`ollama:` refs resolve and save themselves
 at first fetch into `~/.fornax/custom.json`, and `internal/catalog` holds
 only what can't be expressed that way (kev, laya, apple-fm). A new built-in
 should be a rare thing: it needs a runtime story a plain GGUF pull can't
 tell. When one is warranted, add a `modelSpec` to `models` in `catalog.go`;
-`TestEveryPinIsComplete` audits the pin. A pulled model never shares a port
-— customs get 7401+.
+`TestEveryModelFileHasAURL` checks its files. A pulled model never shares a
+port — customs get 7401+.
 
-Engine builds are pinned per platform *and* backend — `engines` in
+Engine builds are listed per platform *and* backend — `engines` in
 `catalog.go` for llama.cpp, `sdEngines` in `internal/modelrt/sd.go` — plain
 build first, GPU builds after, with a CUDA build's runtime archive as a
-`Part`.
-Take sizes and digests from GitHub's asset metadata
-(`gh api repos/<owner>/<repo>/releases/tags/<tag> --jq '.assets[]|[.name,.size,.digest]'`);
-there is no need to download a 600 MB runtime to hash it.
+`Part`. Each names a repo and an asset-name pattern (or a container image
+and the layer holding the build); `engine.Ensure` resolves it against the
+newest release at install time. When upstream renames an asset, update the
+pattern and the real names in `TestEngineAssetsMatchUpstreamNames` /
+`TestSDAssetsMatchUpstreamNames`
+(`gh api 'repos/<owner>/<repo>/releases?per_page=1' --jq '.[0].assets[].name'`).
 `internal/modelrt/backend.go` picks among them.
-
-`fornax pins` audits every pin against upstream — built-in HF `main` HEADs,
-the kev-family release tag, the kev/laya source commits, and every saved
-custom entry — and prints paste-ready re-pins for anything that moved. Run
-it before a release; it exits non-zero on drift.
 
 A new command goes in `commands()` in `main.go` and in the `usage` text next
 to it; `TestUsageAndDispatchTableAgree` holds the two together, and the shell
@@ -84,9 +82,8 @@ reach it only through its exported API.
 | `talk.go`, `record.go` | `talk` (transcribe→answer→speak), `record` (mic → WAV) |
 | `embed.go`, `rerank.go` | `embed`; `rerank` and its `/v1/rerank` client |
 | `compare.go`, `schema.go` | `compare`; `ask --json/--schema` |
-| `show.go` | `show` — the pin card, GGUF metadata, the safetensors header |
+| `show.go` | `show` — the model card, GGUF metadata, the safetensors header |
 | `search.go` | `search` — Hugging Face GGUF repo search |
-| `pins.go` | `pins` — the upstream audit: HF HEADs, release digests, source archives |
 | `version.go` | `version`/`upgrade` — release ldflags stamp (`-X main.version`) |
 | `completion.go` | `completion` — zsh/bash/fish scripts |
 
@@ -96,14 +93,14 @@ reach it only through its exported API.
 | --- | --- |
 | `models.go` | built-ins plus saved custom models as one list; `Installed`, `RequireChat` |
 | `pull.go` | `Resolve` (arg → spec + engine, failing clean on an unsupported platform) and `Pull` |
-| `serve.go` | install → verify, `Rehash`, `scrubbedEnv`, `llama-server` spawn, readiness; `Serve` (`run`) and `Connect` |
+| `serve.go` | model install, `scrubbedEnv`, `llama-server` spawn, readiness; `Serve` (`run`) and `Connect` |
 | `withserver.go` | `WithServer` — reuse-or-ephemeral across every runtime; `Bench` |
-| `hf.go` | `hf:` ref parsing, repo file pick, dynamic pinning, `custom.json` |
+| `hf.go` | `hf:` ref parsing, repo file pick, file sizes, `custom.json` |
 | `ollama.go` | `ollama:` refs via the Ollama registry |
 | `kev.go` | kev runtime: uv venv, `kev.serve` spawn; `installSourceTree` shared with laya |
 | `laya.go` + `laya_serve.py` | laya runtime: uv venv, embedded stdlib `/v1/systemone` shim |
 | `apple.go` + `bridge.swift` | Apple Foundation Models: Swift stdio bridge + loopback adapter |
-| `sd.go` | the pinned stable-diffusion.cpp builds, `PrepareSD`, the `sd-cli` invocation |
+| `sd.go` | the stable-diffusion.cpp builds, `PrepareSD`, the `sd-cli` invocation |
 | `tts.go` | `llama-tts`: `PrepareSpeech`, `RunSay`, `TTSCommand` |
 | `backend.go` | which engine build (cpu/metal/vulkan/cuda) this machine runs |
 | `earshot.go` | handing a running server to Earshot, or the block to paste |
@@ -118,7 +115,7 @@ reach it only through its exported API.
 | `studio/studio.go` + `studio/web/` | the studio server: loopback guard, queue, library; the page is embedded from `web/` |
 | `studio/studio_sd.go`, `studio/studio_voice.go` | the image/video and speech kinds the queue makes |
 | `studio/studio_chat.go` | chat over a warm model server |
-| `studio/hub.go` | the Models page: picks (a ref + companion recipe + download size each, pinned at first fetch like any `pull hf:`), Hugging Face search and size preview, downloads run as `fornax pull … --events` |
+| `studio/hub.go` | the Models page: picks (a ref + companion recipe + download size each, saved at first fetch like any `pull hf:`), Hugging Face search and size preview, downloads run as `fornax pull … --events` |
 | `studio/studio_remote.go` | `studio -on host` — the studio on another machine over an ssh tunnel; the `-leash` that ends it with the connection |
 | `mcp/mcp.go` | `mcp` — newline JSON-RPC MCP server on stdio |
 
@@ -126,10 +123,10 @@ reach it only through its exported API.
 
 | Package | Owns |
 | --- | --- |
-| `internal/catalog` | the pinned model and engine table, `Spec`/`Pin`, modality, runtime, fit math |
+| `internal/catalog` | the built-in model and engine table, `Spec`/`Artifact`, modality, runtime, fit math |
 | `internal/paths` | the `~/.fornax` layout, receipts, config, the loopback API key |
-| `internal/download` | resumable pinned fetch over HTTP Range, plus the SHA-256 check |
-| `internal/engine` | installing the pinned llama.cpp release; the tar/zip unpackers kev and sd reuse |
+| `internal/download` | resumable fetch over HTTP Range, and the size probe |
+| `internal/engine` | finding an engine build in the newest upstream release (GitHub, PyPI, container layer) and installing it; the tar/zip unpackers kev reuses |
 | `internal/openai` | the chat-completions client, embeddings, media parts, the keyed GET and raw POST the other clients build on |
 | `internal/gguf` | the GGUF metadata header reader behind `show` |
 | `internal/ui` | ANSI styling, spinner, progress, `HumanSize`, the `-h` flag table |

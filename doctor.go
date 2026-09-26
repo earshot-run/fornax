@@ -27,14 +27,17 @@ func cmdDoctor(args []string) error {
 	probe := modelrt.ProbeGPU()
 	row(" ", "gpu", modelrt.DescribeGPU(probe))
 	if eng, err := modelrt.LlamaEngine(); err == nil {
-		label := "llama.cpp " + catalog.EngineVersion + " · " + string(eng.Backend)
+		label := "llama.cpp · " + string(eng.Backend)
+		if release := paths.EngineRelease(root, eng); release != "" {
+			label = "llama.cpp " + release + " · " + string(eng.Backend)
+		}
 		if why := modelrt.SkippedGPU(catalog.EngineVariants(), eng, probe); why != "" {
 			label += ui.Dim(" — not CUDA: " + why)
 		}
 		if paths.EngineInstalled(root, eng) {
 			row(ui.MarkOK(), "engine", label)
 		} else {
-			row(ui.MarkIdle(), "engine", label+ui.Dim(fmt.Sprintf(" — first pull downloads it (%s)", ui.HumanSize(eng.TotalBytes()))))
+			row(ui.MarkIdle(), "engine", label+ui.Dim(" — first pull downloads the newest build"))
 		}
 	} else {
 		row(ui.Red("✗"), "engine", err.Error())

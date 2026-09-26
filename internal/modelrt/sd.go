@@ -1,10 +1,9 @@
 package modelrt
 
-// stable-diffusion.cpp — image and video generation through a pinned sd-cli
-// build, the same pinned-engine + pinned-weights pattern as the llama.cpp
-// path. sd-cli is a foreground process, not a server: prompt in, file out,
-// exit. It unpacks beside the llama engine under engine/<tag> so the two
-// never share a dir or a receipt.
+// stable-diffusion.cpp — image and video generation through an sd-cli
+// build from upstream's newest release. sd-cli is a foreground process, not
+// a server: prompt in, file out, exit. It unpacks beside the llama engine
+// under engine/sd-<backend> so the two never share a dir or a receipt.
 
 import (
 	"context"
@@ -17,58 +16,62 @@ import (
 	"time"
 
 	"github.com/earshot-run/fornax/internal/catalog"
-	"github.com/earshot-run/fornax/internal/engine"
 	"github.com/earshot-run/fornax/internal/paths"
 	"github.com/earshot-run/fornax/internal/ui"
 )
 
-// The pinned stable-diffusion.cpp release (github.com/leejet), every build
-// fornax runs, the plain one first. Sizes and digests are GitHub's asset
-// digests; upstream ships no darwin/amd64, linux/arm64 or windows/arm64
-// assets, so those platforms get no engine, and no Linux CUDA build, so an
-// NVIDIA card on Linux runs it through Vulkan.
-const sdVersion = "sd-master-c678dfe"
-
+// Every stable-diffusion.cpp build fornax runs, by GOOS/GOARCH, the plain
+// one first. Upstream ships no darwin/amd64, linux/arm64 or windows/arm64
+// builds, so those platforms get no engine. Its Linux CUDA build ships only
+// inside its container image, without the libraries the image's base layers
+// provide: llama.cpp's CUDA 12 runtime asset carries cudart and cuBLAS, and
+// NVIDIA's NCCL wheel the libnccl.so.2 it links against.
 var sdEngines = func() map[string][]*catalog.EngineSpec {
-	const base = "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-889-c678dfe/"
-	zipball := func(name string, backend catalog.Backend, bytes int64, sha256, binary string) *catalog.EngineSpec {
+	const repo = "leejet/stable-diffusion.cpp"
+	build := func(asset string, backend catalog.Backend, binary string) *catalog.EngineSpec {
 		return &catalog.EngineSpec{
 			Name:    "stable-diffusion.cpp",
-			URL:     base + name + ".zip",
-			Bytes:   bytes,
-			SHA256:  sha256,
-			Archive: name + ".zip",
-			Kind:    catalog.Zip,
-			DirName: catalog.EngineDir(sdVersion, backend),
+			Repo:    repo,
+			Asset:   `^sd-[^-]+-[0-9a-f]+-bin-` + asset + `$`,
+			DirName: "sd-" + string(backend),
 			Backend: backend,
 			Binary:  binary,
 		}
 	}
+	// Both built on Ubuntu 24.04: glibc 2.38 or newer.
 	linux := func(eng *catalog.EngineSpec) *catalog.EngineSpec {
 		eng.MinGlibc = "2.38"
 		return eng
 	}
-	cuda := zipball("sd-master-c678dfe-bin-win-cuda12-x64", catalog.CUDA,
-		332_970_080, "caa31c81523613fa02f6af4c7a52f733c8fd406cfa081a15656a0555f1abc55d", "sd-cli.exe")
+	cuda := build("", catalog.CUDA, "sd-cli.exe")
+	cuda.Asset = `^sd-[^-]+-[0-9a-f]+-bin-win-cuda12-x64\.zip$`
 	cuda.MinDriver = 551
-	cuda.Parts = []catalog.EnginePart{{URL: base + "cudart-sd-bin-win-cu12-x64.zip", Archive: "cudart-sd-bin-win-cu12-x64.zip",
-		Kind: catalog.Zip, Bytes: 563_452_046, SHA256: "fe20366827d357c00797eebb58244dddab7fd9a348d70090c3871004c320f38d"}}
+	cuda.Parts = []catalog.EnginePart{{Repo: repo, Asset: `^cudart-sd-bin-win-cu12-x64\.zip$`}}
+	linuxCUDA := linux(&catalog.EngineSpec{
+		Name:       "stable-diffusion.cpp",
+		Image:      "ghcr.io/leejet/stable-diffusion.cpp:master-cuda",
+		ImageLayer: "/sd.cpp/bin",
+		DirName:    "sd-cuda",
+		Backend:    catalog.CUDA,
+		// llama.cpp's CUDA 12 runtime is 12.8, which wants driver 570.
+		MinDriver: 570,
+		Parts: []catalog.EnginePart{
+			{Repo: "ggml-org/llama.cpp", Asset: `^cudart-llama-[^-]+-bin-ubuntu-cuda-12\.\d+-x64\.tar\.gz$`},
+			{PyPI: "nvidia-nccl-cu12", Asset: `manylinux.*_x86_64\.whl$`, Dir: "nvidia/nccl/lib"},
+		},
+		Binary: "sd-cli",
+	})
 	return map[string][]*catalog.EngineSpec{
-		"darwin/arm64": {zipball("sd-master-c678dfe-bin-Darwin-macOS-26.6.2-arm64", catalog.Metal,
-			34_310_861, "935f47067941d3fe095d80751f04c59cd8105e297177b98d559d9be1d9e7cfd8", "sd-cli")},
-		// Both built on Ubuntu 24.04: glibc 2.38 or newer.
+		"darwin/arm64": {build(`Darwin-macOS-[\d.]+-arm64\.zip`, catalog.Metal, "sd-cli")},
 		"linux/amd64": {
-			linux(zipball("sd-master-c678dfe-bin-Linux-Ubuntu-24.04-x86_64", catalog.CPU,
-				25_417_929, "1d8dc3ecd046a666957b5775712a6f81fded1a5bc57a981e4c0c401a04fca28c", "sd-cli")),
-			linux(zipball("sd-master-c678dfe-bin-Linux-Ubuntu-24.04-x86_64-vulkan", catalog.Vulkan,
-				38_541_221, "e9ecf8361675de79e546c967c02813a4794ac71a5e4fd7329352b3e7ed808dcc", "sd-cli")),
+			linux(build(`Linux-Ubuntu-[\d.]+-x86_64\.zip`, catalog.CPU, "sd-cli")),
+			linuxCUDA,
+			linux(build(`Linux-Ubuntu-[\d.]+-x86_64-vulkan\.zip`, catalog.Vulkan, "sd-cli")),
 		},
 		"windows/amd64": {
-			zipball("sd-master-c678dfe-bin-win-cpu-x64", catalog.CPU,
-				17_185_424, "c8fa63444741f89ced107df00f669718805397a30cfcfa0c83c3162ea8426f39", "sd-cli.exe"),
+			build(`win-cpu-x64\.zip`, catalog.CPU, "sd-cli.exe"),
 			cuda,
-			zipball("sd-master-c678dfe-bin-win-vulkan-x64", catalog.Vulkan,
-				31_935_490, "2ea1dad6c54c1e4fdc61a312ee8ec44f4be36a33ece13d877c896a0253587cdc", "sd-cli.exe"),
+			build(`win-vulkan-x64\.zip`, catalog.Vulkan, "sd-cli.exe"),
 		},
 	}
 }()
@@ -80,14 +83,10 @@ func SDEngine() (*catalog.EngineSpec, error) {
 		return nil, err
 	}
 	if eng == nil {
-		return nil, fmt.Errorf("fornax does not have a pinned stable-diffusion.cpp for %s/%s yet", runtime.GOOS, runtime.GOARCH)
+		return nil, fmt.Errorf("stable-diffusion.cpp publishes no build for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
 	return eng, nil
 }
-
-// Every pinned stable-diffusion.cpp build, by GOOS/GOARCH — `fornax pins`
-// audits them all.
-func SDEngines() map[string][]*catalog.EngineSpec { return sdEngines }
 
 // Pull() only knows the llama engine; the same steps run here against the
 // sd engine dir.
@@ -100,27 +99,18 @@ func PrepareSD(ctx context.Context, spec *catalog.Spec) (string, *catalog.Engine
 	if err := paths.ProtectDir(root); err != nil {
 		return "", nil, err
 	}
-	if !paths.EngineInstalled(root, eng) {
-		bar := ui.NewProgress("sd engine", eng.TotalBytes())
-		if err := engine.Ensure(ctx, root, eng, bar.Set); err != nil {
-			return "", nil, err
-		}
-		fmt.Fprintf(os.Stderr, "%s engine stable-diffusion.cpp %s (%s) installed\n", ui.Green("✓"), sdVersion, eng.Backend)
+	if err := ensureEngine(ctx, root, eng, "sd engine"); err != nil {
+		return "", nil, err
 	}
 	if Installed(root, spec) {
 		fmt.Fprintf(os.Stderr, "%s\n", ui.Dim(spec.ID+" already installed"))
-	} else {
-		bar := ui.NewProgress(spec.ID, spec.TotalBytes())
-		if err := ensureModel(ctx, root, spec, bar.Set); err != nil {
-			return "", nil, err
-		}
-		fmt.Fprintf(os.Stderr, "%s %s installed (%s)\n", ui.Green("✓"), ui.Bold(spec.ID), ui.Dim(ui.HumanSize(spec.TotalBytes())))
+		return root, eng, nil
 	}
-	verifying := ui.Spin("verifying " + spec.ID)
-	defer verifying.Stop("")
-	if err := Rehash(root, spec); err != nil {
+	bar := ui.NewProgress(spec.ID, spec.TotalBytes())
+	if err := ensureModel(ctx, root, spec, bar.Set); err != nil {
 		return "", nil, err
 	}
+	fmt.Fprintf(os.Stderr, "%s %s installed (%s)\n", ui.Green("✓"), ui.Bold(spec.ID), ui.Dim(ui.HumanSize(spec.TotalBytes())))
 	return root, eng, nil
 }
 

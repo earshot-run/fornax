@@ -45,9 +45,6 @@ func WithServer(ctx context.Context, spec *catalog.Spec, eng *catalog.EngineSpec
 		fmt.Fprintf(os.Stderr, "%s\n", ui.Dim(fmt.Sprintf("reusing %s on :%d", spec.ID, spec.Port)))
 		return fn(paths.EndpointURL(spec.Port), key)
 	}
-	if err := Rehash(root, spec); err != nil {
-		return err
-	}
 	port, err := freePort(scratchPortBase)
 	if err != nil {
 		return err
@@ -80,11 +77,7 @@ func withKev(ctx context.Context, root string, spec *catalog.Spec, fn func(url, 
 		fmt.Fprintf(os.Stderr, "%s\n", ui.Dim(fmt.Sprintf("reusing %s on :%d", spec.ID, spec.Port)))
 		return fn(paths.EndpointURL(spec.Port), key)
 	}
-	bar := ui.NewProgress("kev runtime", kevSource.Bytes)
-	if err := ensureKevRuntime(ctx, root, bar.Set); err != nil {
-		return err
-	}
-	if err := Rehash(root, spec); err != nil {
+	if err := ensureKevRuntime(ctx, root); err != nil {
 		return err
 	}
 	port, err := freePort(scratchPortBase)
@@ -119,11 +112,7 @@ func withLaya(ctx context.Context, root string, spec *catalog.Spec, fn func(url,
 		fmt.Fprintf(os.Stderr, "%s\n", ui.Dim(fmt.Sprintf("reusing %s on :%d", spec.ID, spec.Port)))
 		return fn(paths.EndpointURL(spec.Port), key)
 	}
-	bar := ui.NewProgress("laya runtime", layaSource.Bytes)
-	if err := ensureLayaRuntime(ctx, root, bar.Set); err != nil {
-		return err
-	}
-	if err := Rehash(root, spec); err != nil {
+	if err := ensureLayaRuntime(ctx, root); err != nil {
 		return err
 	}
 	port, err := freePort(scratchPortBase)
@@ -153,12 +142,9 @@ func Bench(ctx context.Context, spec *catalog.Spec, eng *catalog.EngineSpec) err
 	if err := Pull(ctx, spec, eng); err != nil {
 		return err
 	}
-	if err := Rehash(root, spec); err != nil {
-		return err
-	}
 	bench := paths.EngineBinary(root, eng, eng.Bench)
 	if _, err := os.Stat(bench); err != nil {
-		return fmt.Errorf("llama-bench is not in the pinned engine")
+		return fmt.Errorf("llama-bench is not in the installed engine")
 	}
 	fmt.Fprintf(os.Stderr, "%s\n", ui.Dim(fmt.Sprintf("llama-bench on %s (pp512 / tg128)", spec.ID)))
 	cmd := exec.CommandContext(ctx, bench, "-m", paths.ModelFinal(root, spec))

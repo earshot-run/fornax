@@ -1,5 +1,5 @@
-// Package modelrt is the model runtime: it resolves an argument to a pinned
-// spec, installs and verifies what that spec needs, and runs it — llama-server,
+// Package modelrt is the model runtime: it resolves an argument to a
+// spec, installs what that spec needs, and runs it — llama-server,
 // kev and laya under uv, the Apple Foundation Models bridge, sd-cli and
 // llama-tts — behind one callback (WithServer) or in the foreground (Serve).
 // It is the one package that knows the runtimes apart; the commands, the
@@ -11,8 +11,6 @@ package modelrt
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/earshot-run/fornax/internal/catalog"
@@ -62,24 +60,19 @@ func Instead(spec *catalog.Spec) (does, command, operands string) {
 	return "", "", ""
 }
 
-// A model is installed when every pinned file is present at its byte count
-// and the receipt lists the matching digests. kev models keep their verified
+// A model is installed when every file it needs is in place — a download
+// only takes its final name once it is complete. kev models keep their
 // tarball and the checkpoint it unpacks to.
 func Installed(root string, spec *catalog.Spec) bool {
 	if spec.Runtime == catalog.Apple {
 		return AppleInstalled(root, spec)
 	}
-	dir := paths.ModelDir(root, spec)
-	for _, pin := range spec.Files() {
-		info, err := os.Stat(paths.FilePath(root, spec, pin))
-		if err != nil || info.Size() != pin.Bytes {
+	for _, file := range spec.Files() {
+		if !FileInstalled(root, spec, file) {
 			return false
 		}
 	}
-	if spec.Runtime == catalog.Kev && KevCkptDir(root, spec) == "" {
-		return false
-	}
-	return paths.ReadReceipt(filepath.Join(dir, paths.Receipt), spec)
+	return spec.Runtime != catalog.Kev || KevCkptDir(root, spec) != ""
 }
 
 // ask and chat both need a model that holds a conversation; every other kind

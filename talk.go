@@ -73,7 +73,7 @@ func cmdTalk(ctx context.Context, args []string) error {
 		return err
 	}
 	if ttsEng == nil {
-		return fmt.Errorf("%s does not speak through the pinned llama.cpp engine", ttsSpec.ID)
+		return fmt.Errorf("%s does not speak through the llama.cpp engine", ttsSpec.ID)
 	}
 
 	var transcript string

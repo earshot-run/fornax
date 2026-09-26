@@ -1,6 +1,6 @@
 package main
 
-// `fornax show <model>` — the pin card plus a look inside the installed
+// `fornax show <model>` — the model card plus a look inside the installed
 // artifact: GGUF metadata (arch, params, quant, context), the safetensors
 // header for image models, the unpacked checkpoint for kev. Nothing is
 // downloaded and no model is loaded.
@@ -80,26 +80,22 @@ func cmdShow(args []string) error {
 	}
 
 	nameWidth := 0
-	for _, pin := range spec.Files() {
-		nameWidth = max(nameWidth, len(pin.File))
+	for _, file := range spec.Files() {
+		nameWidth = max(nameWidth, len(file.File))
 	}
-	for _, pin := range spec.Files() {
+	for _, file := range spec.Files() {
 		mark, state := ui.MarkIdle(), ui.Dim("not installed")
 		switch {
-		case modelrt.FileInstalled(root, spec, pin):
+		case modelrt.FileInstalled(root, spec, file):
 			mark, state = ui.MarkOK(), ui.Green("installed")
 		default:
-			if part := paths.PartialBytes(paths.PartPath(root, spec, pin), pin.Bytes); part > 0 {
-				state = ui.Yellow(fmt.Sprintf("%d%%", part*100/max(pin.Bytes, 1)))
+			if part := paths.PartialBytes(paths.PartPath(root, spec, file), file.Bytes); part > 0 {
+				state = ui.Yellow(fmt.Sprintf("%d%%", part*100/max(file.Bytes, 1)))
 			}
 		}
-		sha := pin.SHA256
-		if len(sha) > 12 {
-			sha = sha[:12] + "…"
-		}
-		fmt.Printf("  %s %s %s %s %s %s\n",
-			mark, ui.Cell("file", 8, ui.Dim), ui.Cell(pin.File, nameWidth, nil),
-			ui.Cell(ui.HumanSize(pin.Bytes), 7, nil), ui.Dim("sha256 "+sha), state)
+		fmt.Printf("  %s %s %s %s %s\n",
+			mark, ui.Cell("file", 8, ui.Dim), ui.Cell(file.File, nameWidth, nil),
+			ui.Cell(ui.HumanSize(file.Bytes), 7, nil), state)
 	}
 	total := ui.HumanSize(spec.TotalBytes())
 	if spec.Runtime == catalog.Apple {
@@ -123,7 +119,7 @@ func cmdShow(args []string) error {
 			row(ui.MarkIdle(), "artifact", ui.Dim("the model ships in macOS — nothing to download"))
 		}
 	case catalog.Kev:
-		// The pinned tarball unpacks to a checkpoint dir holding head.pt.
+		// The tarball unpacks to a checkpoint dir holding head.pt.
 		switch ckpt := modelrt.KevCkptDir(root, spec); {
 		case ckpt != "":
 			row(ui.MarkOK(), "ckpt", filepath.Base(ckpt)+ui.Dim(" — "+ui.HumanSize(modelrt.DirSize(ckpt))+" unpacked"))
@@ -134,13 +130,13 @@ func cmdShow(args []string) error {
 		}
 	}
 
-	pin := &spec.Model
-	name := strings.ToLower(pin.File)
+	file := &spec.Model
+	name := strings.ToLower(file.File)
 	switch {
-	case modelrt.FileInstalled(root, spec, pin) && strings.HasSuffix(name, ".gguf"):
-		showGGUF(paths.FilePath(root, spec, pin))
-	case modelrt.FileInstalled(root, spec, pin) && strings.HasSuffix(name, ".safetensors"):
-		showSafetensors(paths.FilePath(root, spec, pin))
+	case modelrt.FileInstalled(root, spec, file) && strings.HasSuffix(name, ".gguf"):
+		showGGUF(paths.FilePath(root, spec, file))
+	case modelrt.FileInstalled(root, spec, file) && strings.HasSuffix(name, ".safetensors"):
+		showSafetensors(paths.FilePath(root, spec, file))
 	}
 
 	fmt.Println()

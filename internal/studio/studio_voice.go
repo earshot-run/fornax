@@ -74,19 +74,16 @@ func (s *studio) speechProgress(job *studioJob, line string) {
 	s.notifyLocked()
 }
 
-// Verify the pinned files, then one llama-tts run into the library.
+// Install what the model needs, then one llama-tts run into the library.
 func (s *studio) speechGenerate(ctx context.Context, job *studioJob) error {
 	spec, eng, err := modelrt.Resolve(ctx, job.Model)
 	if err != nil {
 		return err
 	}
 	if eng == nil || eng.TTS == "" {
-		return fmt.Errorf("%s does not speak through the pinned llama.cpp engine", spec.ID)
+		return fmt.Errorf("%s does not speak through the llama.cpp engine", spec.ID)
 	}
 	if err := modelrt.Pull(ctx, spec, eng); err != nil {
-		return err
-	}
-	if err := modelrt.Rehash(s.root, spec); err != nil {
 		return err
 	}
 	voice := ""

@@ -3,7 +3,7 @@ package studio
 // The Models page: picks that fit this machine, Hugging Face search, and
 // downloads you can watch. A download is `fornax pull … --events` run as a
 // child, so the page gets exactly what the CLI does — the same resolve, the
-// same pin at first fetch, the same verification — and its progress lines.
+// same save at first fetch — and its progress lines.
 
 import (
 	"bufio"
@@ -26,9 +26,9 @@ import (
 	"github.com/earshot-run/fornax/internal/paths"
 )
 
-// A suggested model. There is no catalog to keep pinned: a pick is only a
+// A suggested model. There is no catalog to keep current: a pick is only a
 // ref plus the companion files and engine arguments it needs, and pulling
-// one pins it at first fetch like any `pull hf:`. Bytes is the download
+// one saves it at first fetch like any `pull hf:`. Bytes is the download
 // size, for the page to judge the fit before anything is fetched.
 type hubPick struct {
 	Key   string `json:"key"`

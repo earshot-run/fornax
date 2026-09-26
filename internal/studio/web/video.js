@@ -19,7 +19,7 @@
   // Wan wants 4n+1 frames. sd-cli writes 24 fps unless a model's args say otherwise.
   const FRAMES = [17, 33, 49, 81, 121];
   const FPS = 24;
-  const PHASES = { verifying: "Checking weights", loading: "Loading model", decoding: "Decoding frames", saving: "Saving" };
+  const PHASES = { preparing: "Getting ready", loading: "Loading model", decoding: "Decoding frames", saving: "Saving" };
 
   const key = (k) => "video." + k;
   const state = {
@@ -312,7 +312,7 @@
       const ahead = state.jobs.filter((j) => j.state === "queued" || j.state === "running").indexOf(job);
       t.phase.textContent = ahead > 0 ? `Queued · ${ahead} ahead` : "Queued";
     } else {
-      t.phase.textContent = job.phase === "sampling" ? `Step ${job.step} of ${job.total}` : (PHASES[job.phase] || "Starting");
+      t.phase.textContent = job.phase === "sampling" ? (job.step ? `Step ${job.step} of ${job.total}` : "Sampling") : (PHASES[job.phase] || "Starting");
       t.bar.style.width = (progressOf(job) * 100).toFixed(1) + "%";
       t.elapsed.textContent = fmtDuration((Date.now() - Date.parse(job.started)) / 1000) || "0s";
       const left = remaining(job);

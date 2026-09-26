@@ -48,9 +48,11 @@ func (s *studio) sdKind(kind catalog.Modality, ext string) studioKind {
 
 var (
 	// `|=====>      | 3/20 - 13.44s/it` — sampling. Loading bars use MB/s.
-	sdStepPattern   = regexp.MustCompile(`\|\s*(\d+)/(\d+) - ([\d.]+)(s/it|it/s)`)
-	sdSampledMarker = "sampling completed"
-	sdDoneMarker    = "generate_image completed"
+	sdStepPattern = regexp.MustCompile(`\|\s*(\d+)/(\d+) - ([\d.]+)(s/it|it/s)`)
+	// The text encoder is done; step 1 on a slow backend can take a minute.
+	sdSamplingMarker = "generating image:"
+	sdSampledMarker  = "sampling completed"
+	sdDoneMarker     = "generate_image completed"
 
 	studioImagePattern = regexp.MustCompile(`\.(png|jpg|webp)$`)
 )
@@ -88,6 +90,8 @@ func (s *studio) progress(job *studioJob, line string) {
 			job.previewStamp = info.ModTime()
 			job.Preview++
 		}
+	case strings.Contains(line, sdSamplingMarker):
+		job.Phase = "sampling"
 	case strings.Contains(line, sdSampledMarker):
 		job.Phase, job.sampled = "decoding", time.Now()
 	case strings.Contains(line, sdDoneMarker):
@@ -101,7 +105,7 @@ func (s *studio) progress(job *studioJob, line string) {
 	s.notifyLocked()
 }
 
-// Verify the pinned files, then one sd-cli run whose output streams through
+// Install what the model needs, then one sd-cli run whose output streams through
 // progress() and into studio/last.log.
 func (s *studio) sdGenerate(ctx context.Context, job *studioJob) error {
 	spec := modelrt.Model(job.Model)

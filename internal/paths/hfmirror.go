@@ -9,7 +9,7 @@ import (
 )
 
 // HFMirrorURL routes only canonical Hugging Face URLs through an opt-in mirror.
-// Pins and saved URLs remain canonical, so changing mirrors never changes identity.
+// Saved URLs remain canonical, so changing mirrors never changes identity.
 func HFMirrorURL(raw string) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil {

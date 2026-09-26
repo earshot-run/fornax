@@ -10,7 +10,7 @@
   const MAX_CHARS = 2000;
   // Qwen3-TTS clones from a few seconds; longer clips only slow the encoder.
   const CLIP_RATE = 24000, CLIP_MAX = 20;
-  const PHASES = { verifying: "Checking weights", loading: "Loading model", speaking: "Speaking", saving: "Saving" };
+  const PHASES = { preparing: "Getting ready", loading: "Loading model", speaking: "Speaking", saving: "Saving" };
 
   const key = (k) => "voice." + k;
   const state = {
@@ -428,7 +428,7 @@
     } else {
       const elapsed = (Date.now() - Date.parse(job.started)) / 1000;
       const est = estimate(job.model, job.prompt.length, !!job.voice);
-      const byPhase = { verifying: 0.08, loading: 0.2, speaking: 0.45, saving: 0.97 }[job.phase] || 0.04;
+      const byPhase = { preparing: 0.08, loading: 0.2, speaking: 0.45, saving: 0.97 }[job.phase] || 0.04;
       const fraction = est ? Math.max(byPhase, Math.min(0.97, elapsed / est)) : byPhase;
       r.phase.textContent = PHASES[job.phase] || "Starting";
       r.bar.style.width = (fraction * 100).toFixed(1) + "%";

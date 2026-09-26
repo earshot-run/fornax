@@ -1,6 +1,6 @@
 package modelrt
 
-// Which engine build drives this machine's accelerator. Each platform pins a
+// Which engine build drives this machine's accelerator. Each platform lists a
 // plain build plus GPU ones (catalog.Engines, sdEngines); this picks among
 // them from what the machine has, or from FORNAX_BACKEND.
 

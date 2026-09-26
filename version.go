@@ -23,7 +23,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/earshot-run/fornax/internal/catalog"
 	"github.com/earshot-run/fornax/internal/openai"
 	"github.com/earshot-run/fornax/internal/ui"
 )
@@ -42,17 +41,13 @@ func cmdVersion(args []string) error {
 		return fmt.Errorf("usage: fornax version")
 	}
 	fmt.Printf("fornax %s\n", version)
-	fmt.Println(ui.Dim("llama.cpp " + catalog.EngineVersion))
 	return nil
 }
 
 type ghAsset struct {
 	Name string `json:"name"`
 	URL  string `json:"browser_download_url"`
-	// GitHub reports the uploaded artifact's digest ("sha256:…") — `fornax
-	// pins` diffs it against the catalog.
-	Size   int64  `json:"size"`
-	Digest string `json:"digest"`
+	Size int64  `json:"size"`
 }
 
 type ghRelease struct {

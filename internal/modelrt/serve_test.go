@@ -2,8 +2,6 @@ package modelrt
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -66,9 +64,8 @@ func TestEnsureModelProgressIsCumulative(t *testing.T) {
 		http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(body))
 	}))
 	defer server.Close()
-	pin := func(name string, body []byte) catalog.Pin {
-		sum := sha256.Sum256(body)
-		return catalog.Pin{File: name + ".gguf", Bytes: int64(len(body)), SHA256: hex.EncodeToString(sum[:]), URL: server.URL + "/" + name}
+	pin := func(name string, body []byte) catalog.Artifact {
+		return catalog.Artifact{File: name + ".gguf", Bytes: int64(len(body)), URL: server.URL + "/" + name}
 	}
 	projPin := pin("proj", proj)
 	spec := &catalog.Spec{ID: "two-files", Runtime: catalog.Llama, Model: pin("weights", weights), MMProj: &projPin}

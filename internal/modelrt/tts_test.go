@@ -40,7 +40,7 @@ cat "$voice" > "$out"
 	if err := os.WriteFile("reference.wav", []byte("RIFF test audio"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	spec := &catalog.Spec{ID: "test-tts", MMProj: &catalog.Pin{File: "projector.gguf"}}
+	spec := &catalog.Spec{ID: "test-tts", MMProj: &catalog.Artifact{File: "projector.gguf"}}
 	if err := RunSay(context.Background(), root, eng, spec, "hello", "speech.wav", "reference.wav", "en", 0); err != nil {
 		t.Fatal(err)
 	}

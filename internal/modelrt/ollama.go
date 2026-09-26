@@ -1,10 +1,10 @@
 package modelrt
 
 // Models from the Ollama registry. `fornax pull ollama:llama3.2[:tag]` reads
-// the model's OCI manifest on registry.ollama.ai — each layer's digest is
-// already the artifact's SHA-256 and its size is exact, so the pin comes
-// straight from the manifest — saves it to ~/.fornax/custom.json and
-// installs through the same verify path as every other model.
+// the model's OCI manifest on registry.ollama.ai — each layer is a blob
+// addressed by its digest, with its exact size — saves it to
+// ~/.fornax/custom.json and installs through the same path as every other
+// model.
 
 import (
 	"context"
@@ -149,7 +149,7 @@ func canonicalOllamaRef(ns, name, tag string) string {
 	return "ollama:" + ns + "/" + name + ":" + tag
 }
 
-// Pin an ollama: ref (or pasted ollama.com/library URL) and save it as a
+// Save an ollama: ref (or pasted ollama.com/library URL) as a
 // custom model — or return the one a previous pull saved.
 func EnsureOllama(ctx context.Context, ref, as, kind string) (*catalog.Spec, error) {
 	entry, err := ensureOllama(ctx, ref, as, kind)
@@ -159,8 +159,8 @@ func EnsureOllama(ctx context.Context, ref, as, kind string) (*catalog.Spec, err
 	return entry.spec(), nil
 }
 
-// Turn an ollama ref into a saved custom model: resolve the manifest, pin
-// the layers, save. Nothing is downloaded — Pull() does that later.
+// Turn an ollama ref into a saved custom model: resolve the manifest,
+// record its layers, save. Nothing is downloaded — Pull() does that later.
 func ensureOllama(ctx context.Context, arg, as, kind string) (*customEntry, error) {
 	ns, name, tag, err := parseOllamaRef(arg)
 	if err != nil {
@@ -207,15 +207,13 @@ func ensureOllama(ctx context.Context, arg, as, kind string) (*customEntry, erro
 		Revision: manifestDigest,
 		File:     ollamaFileName(ns, name, tag),
 		Bytes:    modelLayer.Size,
-		SHA256:   strings.TrimPrefix(modelLayer.Digest, "sha256:"),
 		URL:      ollamaBlobURL(ns, name, modelLayer.Digest),
 	}
 	if projLayer != nil && kindName != "text" {
-		entry.MMProj = &customPin{
-			File:   "mmproj-" + entry.File,
-			Bytes:  projLayer.Size,
-			SHA256: strings.TrimPrefix(projLayer.Digest, "sha256:"),
-			URL:    ollamaBlobURL(ns, name, projLayer.Digest),
+		entry.MMProj = &customFile{
+			File:  "mmproj-" + entry.File,
+			Bytes: projLayer.Size,
+			URL:   ollamaBlobURL(ns, name, projLayer.Digest),
 		}
 	}
 	fetching.Stop("")

@@ -1,7 +1,7 @@
 package download
 
-// Package download makes resumable, strictly pinned downloads. A `.part` file resumes via HTTP
-// Range; nothing is "done" until byte count and SHA-256 both match the pin.
+// Package download makes resumable downloads. A `.part` file resumes via HTTP
+// Range; nothing is "done" until it holds the size the server announced.
 //
 // Big files come down as parallel byte ranges: one stream is capped by its
 // own latency and the server's per-connection pace long before the line is
@@ -11,8 +11,6 @@ package download
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -37,9 +35,14 @@ var (
 
 var errNoRanges = errors.New("the server does not serve byte ranges")
 
+// expected is the size the server will send; 0 or less when it doesn't say,
+// which downloads in one stream from the start every time.
 func Fetch(ctx context.Context, url string, expected int64, path string, progress func(int64)) error {
 	if err := paths.ProtectDir(filepath.Dir(path)); err != nil {
 		return err
+	}
+	if expected <= 0 {
+		return fetchUnsized(ctx, url, path, progress)
 	}
 	if expected >= parallelMin {
 		err := fetchRanges(ctx, url, expected, path, progress)
@@ -106,7 +109,7 @@ func fetchStream(ctx context.Context, url string, expected int64, path string, p
 		if n > 0 {
 			if downloaded+int64(n) > expected {
 				file.Close()
-				return fmt.Errorf("the download exceeded its pinned size")
+				return fmt.Errorf("the download exceeded its expected size")
 			}
 			if _, err := file.Write(buf[:n]); err != nil {
 				file.Close()
@@ -131,7 +134,7 @@ func fetchStream(ctx context.Context, url string, expected int64, path string, p
 		return fmt.Errorf("could not finish download: %w", err)
 	}
 	if downloaded != expected {
-		return fmt.Errorf("the download ended before its pinned size")
+		return fmt.Errorf("the download ended before its expected size")
 	}
 	return nil
 }
@@ -167,33 +170,64 @@ func parseContentRange(value string) (contentRange, error) {
 	return cr, nil
 }
 
-func Verify(path string, expectedBytes int64, expectedSHA string) error {
-	if len(expectedSHA) != 64 {
-		return fmt.Errorf("the pinned digest is invalid")
-	}
-	info, err := os.Stat(path)
+// The size url will send, from a HEAD that follows redirects (Hugging Face
+// answers from its CDN).
+func Size(ctx context.Context, url string) (int64, error) {
+	req, err := newRequest(ctx, url)
 	if err != nil {
-		return fmt.Errorf("could not read downloaded artifact: %w", err)
+		return 0, err
 	}
-	if info.Size() != expectedBytes {
-		os.Remove(path)
-		return fmt.Errorf("the downloaded artifact had the wrong size")
-	}
-	file, err := os.Open(path)
+	req.Method = http.MethodHead
+	resp, err := (&http.Client{Timeout: time.Minute}).Do(req)
 	if err != nil {
-		return fmt.Errorf("could not verify downloaded artifact: %w", err)
+		return 0, fmt.Errorf("could not reach %s: %w", req.URL.Host, err)
 	}
-	hasher := sha256.New()
-	_, copyErr := io.Copy(hasher, file)
-	file.Close()
-	if copyErr != nil {
-		return fmt.Errorf("could not verify downloaded artifact: %w", copyErr)
+	resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return 0, fmt.Errorf("%s answered HTTP %d", url, resp.StatusCode)
 	}
-	if hex.EncodeToString(hasher.Sum(nil)) != expectedSHA {
-		os.Remove(path)
-		return fmt.Errorf("the download did not pass its SHA-256 check")
+	return resp.ContentLength, nil
+}
+
+func fetchUnsized(ctx context.Context, url, path string, progress func(int64)) error {
+	req, err := newRequest(ctx, url)
+	if err != nil {
+		return err
+	}
+	resp, err := (&http.Client{Timeout: 6 * time.Hour}).Do(req)
+	if err != nil {
+		return fmt.Errorf("download failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("download returned HTTP %d", resp.StatusCode)
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("could not save download: %w", err)
+	}
+	var done int64
+	_, err = io.Copy(file, io.TeeReader(resp.Body, progressWriter(func(n int) {
+		done += int64(n)
+		progress(done)
+	})))
+	if err == nil {
+		err = file.Sync()
+	}
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return fmt.Errorf("download stopped: %w", err)
 	}
 	return nil
+}
+
+type progressWriter func(int)
+
+func (w progressWriter) Write(p []byte) (int, error) {
+	w(len(p))
+	return len(p), nil
 }
 
 // A GET that carries the Hugging Face token to huggingface.co itself, never
@@ -380,7 +414,7 @@ func fetchRangeOnce(ctx context.Context, url string, expected int64, file *os.Fi
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
 			if at+int64(n) > r.End {
-				return fmt.Errorf("the download exceeded its pinned size")
+				return fmt.Errorf("the download exceeded its expected size")
 			}
 			if _, err := file.WriteAt(buf[:n], at); err != nil {
 				return fmt.Errorf("could not save download: %w", err)
@@ -399,7 +433,7 @@ func fetchRangeOnce(ctx context.Context, url string, expected int64, file *os.Fi
 		}
 	}
 	if at != r.End {
-		return fmt.Errorf("the download ended before its pinned size")
+		return fmt.Errorf("the download ended before its expected size")
 	}
 	return nil
 }

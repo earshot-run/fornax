@@ -6,17 +6,8 @@ import (
 	"github.com/earshot-run/fornax/internal/catalog"
 )
 
-func TestLayaSourcePinIsComplete(t *testing.T) {
-	if len(layaSource.SHA256) != 64 || layaSource.Bytes <= 0 {
-		t.Error("incomplete laya source pin")
-	}
-	if layaSource.URL == "" && layaSource.Revision == "" {
-		t.Error("the laya source pin names neither a URL nor a revision")
-	}
-}
-
 // A laya model installs a checkpoint dir the shim can --model: weights,
-// rl_agent_config.json, encoder config and the tokenizer pair — each pinned.
+// rl_agent_config.json, encoder config and the tokenizer pair.
 func TestLayaSpecsCarryACheckpoint(t *testing.T) {
 	want := []string{
 		"model.safetensors",
@@ -33,8 +24,8 @@ func TestLayaSpecsCarryACheckpoint(t *testing.T) {
 			t.Errorf("%s: laya runtime but kind %s", spec.ID, spec.Kind)
 		}
 		files := map[string]bool{}
-		for _, pin := range spec.Files() {
-			files[pin.File] = true
+		for _, file := range spec.Files() {
+			files[file.File] = true
 		}
 		prefix := ""
 		for _, wantFile := range want {
@@ -50,7 +41,7 @@ func TestLayaSpecsCarryACheckpoint(t *testing.T) {
 				}
 			}
 			if !found {
-				t.Errorf("%s: no pinned file ending in %s", spec.ID, wantFile)
+				t.Errorf("%s: no file ending in %s", spec.ID, wantFile)
 			}
 		}
 		if prefix != "" {

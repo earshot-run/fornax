@@ -6,9 +6,9 @@ package modelrt
 // library with no server, so fornax embeds a stdlib shim (laya_serve.py)
 // that loads a checkpoint dir and — unlike kev — requires the loopback key.
 //
-// fornax pins the laya source tarball and each checkpoint's files
-// (safetensors, rl_agent_config.json, encoder and tokenizer configs) the
-// same way it pins everything else, then builds a uv venv once.
+// fornax installs laya from its repo's HEAD and each checkpoint's files
+// (safetensors, rl_agent_config.json, encoder and tokenizer configs) from
+// Hugging Face, then builds a uv venv once.
 
 import (
 	"context"
@@ -18,38 +18,22 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 
 	"github.com/earshot-run/fornax/internal/catalog"
 	"github.com/earshot-run/fornax/internal/paths"
 	"github.com/earshot-run/fornax/internal/ui"
 )
 
-// The pinned laya source — a GitHub commit archive, byte-counted and hashed
-// like every other artifact.
-var layaSource = catalog.Pin{
-	File:     "laya-573e5b62.tar.gz",
-	Revision: "573e5b62696ba441230cd6be71d593331b5d23af",
-	Bytes:    1_866_233,
-	SHA256:   "03931635a92b7609c6c253ac1d4d618ebe4fc54956744db01c027b504fd9c426",
-}
-
-const layaSourceURL = "https://github.com/NandhaKishorM/laya/archive/573e5b62696ba441230cd6be71d593331b5d23af.tar.gz"
+const layaRepo = "NandhaKishorM/laya"
 
 //go:embed laya_serve.py
 var layaServePy string
 
-func layaRoot(root string) string      { return filepath.Join(root, "laya") }
-func layaSrcDir(root string) string    { return filepath.Join(layaRoot(root), "src") }
-func layaPython(root string) string    { return filepath.Join(layaSrcDir(root), ".venv", "bin", "python") }
-func layaServePath(root string) string { return filepath.Join(layaRoot(root), "serve.py") }
-func LayaRuntimeReady(root string) bool {
-	if _, err := os.Stat(layaPython(root)); err != nil {
-		return false
-	}
-	data, err := os.ReadFile(filepath.Join(layaRoot(root), paths.Receipt))
-	return err == nil && strings.TrimSpace(string(data)) == layaSource.SHA256
-}
+func layaRoot(root string) string       { return filepath.Join(root, "laya") }
+func layaSrcDir(root string) string     { return filepath.Join(layaRoot(root), "src") }
+func layaPython(root string) string     { return filepath.Join(layaSrcDir(root), ".venv", "bin", "python") }
+func layaServePath(root string) string  { return filepath.Join(layaRoot(root), "serve.py") }
+func LayaRuntimeReady(root string) bool { return sourceReady(layaRoot(root), layaPython(root)) }
 
 // The directory the shim should --model: the one holding
 // rl_agent_config.json — the model dir itself for the English checkpoint,
@@ -74,10 +58,10 @@ func layaModelDir(root string, spec *catalog.Spec) string {
 	return ""
 }
 
-// Fetch the pinned source, unpack it, build the venv with uv and pip-install
+// Fetch the source, unpack it, build the venv with uv and pip-install
 // the package into it (the heavy part — torch and friends, a few GB on
 // first run).
-func ensureLayaRuntime(ctx context.Context, root string, progress func(int64)) error {
+func ensureLayaRuntime(ctx context.Context, root string) error {
 	if runtime.GOOS == "windows" {
 		return fmt.Errorf("laya models need macOS or Linux (torch MPS/CUDA)")
 	}
@@ -91,7 +75,7 @@ func ensureLayaRuntime(ctx context.Context, root string, progress func(int64)) e
 	if err := paths.ProtectDir(layaRoot(root)); err != nil {
 		return err
 	}
-	src, err := installSourceTree(ctx, layaRoot(root), layaSource, layaSourceURL, progress)
+	src, err := installSourceTree(ctx, layaRoot(root), layaRepo)
 	if err != nil {
 		return err
 	}
@@ -112,7 +96,7 @@ func ensureLayaRuntime(ctx context.Context, root string, progress func(int64)) e
 	if err := install.Run(); err != nil {
 		return fmt.Errorf("uv pip install failed: %w", err)
 	}
-	return paths.AtomicPrivate(filepath.Join(layaRoot(root), paths.Receipt), []byte(layaSource.SHA256+"\n"))
+	return paths.AtomicPrivate(filepath.Join(layaRoot(root), paths.Receipt), []byte(layaRepo+"@HEAD\n"))
 }
 
 func spawnLaya(root string, spec *catalog.Spec, port int, logPath string) (*exec.Cmd, error) {

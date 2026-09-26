@@ -3,8 +3,6 @@ package studio
 import (
 	"bufio"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -27,7 +25,6 @@ import (
 func installFakeChatModel(t *testing.T, root, id, kind string) {
 	t.Helper()
 	weights := []byte("GGUF fake weights")
-	sum := sha256.Sum256(weights)
 	saved := filepath.Join(root, modelrt.CustomFile)
 	var store struct {
 		Version int              `json:"version"`
@@ -41,7 +38,7 @@ func installFakeChatModel(t *testing.T, root, id, kind string) {
 	store.Version = 1
 	store.Models = append(store.Models, map[string]any{
 		"id": id, "kind": kind, "repo": "test/" + id, "revision": "0000000000000000000000000000000000000000",
-		"file": id + ".gguf", "bytes": len(weights), "sha256": hex.EncodeToString(sum[:]), "port": 7401 + len(store.Models),
+		"file": id + ".gguf", "bytes": len(weights), "port": 7401 + len(store.Models),
 	})
 	raw, err := json.Marshal(store)
 	if err != nil {
@@ -54,14 +51,11 @@ func installFakeChatModel(t *testing.T, root, id, kind string) {
 	if spec == nil {
 		t.Fatalf("%s did not register", id)
 	}
-	pin := spec.Files()[0]
-	if err := os.MkdirAll(filepath.Dir(paths.FilePath(root, spec, pin)), 0o700); err != nil {
+	file := spec.Files()[0]
+	if err := os.MkdirAll(filepath.Dir(paths.FilePath(root, spec, file)), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(paths.FilePath(root, spec, pin), weights, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := paths.WriteReceipt(paths.ModelDir(root, spec), spec); err != nil {
+	if err := os.WriteFile(paths.FilePath(root, spec, file), weights, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if !modelrt.Installed(root, spec) {

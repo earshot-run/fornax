@@ -1,7 +1,7 @@
 package main
 
 // `say` — text to speech through `llama-tts`, a foreground tool that ships
-// in the same pinned llama.cpp archive as llama-server. Qwen3-TTS clones a
+// in the same llama.cpp build as llama-server. Qwen3-TTS clones a
 // voice from a few seconds of reference audio (--tts-speaker-file), which is
 // the part of a voice studio worth salvaging: one flag, no training, no
 // cloud.
@@ -127,9 +127,6 @@ func speakText(ctx context.Context, spec *catalog.Spec, text string) error {
 	work := tmp.Name()
 	tmp.Close()
 	defer os.Remove(work)
-	if err := modelrt.Rehash(root, spec); err != nil {
-		return err
-	}
 	if err := modelrt.Synthesize(ctx, root, eng, spec, text, work, "", "en", 0); err != nil {
 		return err
 	}

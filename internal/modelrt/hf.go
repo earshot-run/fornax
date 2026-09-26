@@ -1,10 +1,9 @@
 package modelrt
 
 // User-added models from Hugging Face. `fornax pull hf:Org/Repo/File.gguf`
-// (or a pasted huggingface.co URL) resolves the pin at fetch time — HF serves
-// the LFS sha256 in `x-linked-etag`, the byte count in `x-linked-size` and the
-// immutable commit in `x-repo-commit` — saves it to ~/.fornax/custom.json, and
-// installs through the same verify/receipt path as the built-ins.
+// (or a pasted huggingface.co URL) resolves at fetch time — HF serves each
+// file's byte count in `x-linked-size` — saves it to ~/.fornax/custom.json,
+// and installs through the same path as the built-ins.
 
 import (
 	"context"
@@ -40,17 +39,17 @@ type customEntry struct {
 	// entry without touching the network again.
 	Ref  string `json:"ref,omitempty"`
 	Repo string `json:"repo"`
-	// The ref's requested rev ("main" when unspecified) — Revision below is
-	// the immutable commit it resolved to.
+	// The ref's requested rev ("main" when unspecified), and the revision
+	// its files download from — the same, bar entries saved when fornax
+	// still resolved a commit.
 	Want     string `json:"want,omitempty"`
 	Revision string `json:"revision"`
 	File     string `json:"file"`
 	Bytes    int64  `json:"bytes"`
-	SHA256   string `json:"sha256"`
 	// Direct download URL for non-Hugging-Face sources (ollama registry
 	// blobs). Empty = built from repo/revision/file on huggingface.co.
-	URL    string     `json:"url,omitempty"`
-	MMProj *customPin `json:"mmproj,omitempty"`
+	URL    string      `json:"url,omitempty"`
+	MMProj *customFile `json:"mmproj,omitempty"`
 	// image and video only: files passed to sd-cli under their own flag,
 	// and the engine arguments the operator saved for this model.
 	Companions []customCompanion `json:"companions,omitempty"`
@@ -58,19 +57,17 @@ type customEntry struct {
 	Port       int               `json:"port"`
 }
 
-type customPin struct {
-	File   string `json:"file"`
-	Bytes  int64  `json:"bytes"`
-	SHA256 string `json:"sha256"`
-	URL    string `json:"url,omitempty"`
+type customFile struct {
+	File  string `json:"file"`
+	Bytes int64  `json:"bytes"`
+	URL   string `json:"url,omitempty"`
 }
 
 type customCompanion struct {
-	Flag   string `json:"flag"`
-	File   string `json:"file"`
-	Bytes  int64  `json:"bytes"`
-	SHA256 string `json:"sha256"`
-	URL    string `json:"url"`
+	Flag  string `json:"flag"`
+	File  string `json:"file"`
+	Bytes int64  `json:"bytes"`
+	URL   string `json:"url"`
 }
 
 type customStore struct {
@@ -132,25 +129,24 @@ func (e *customEntry) spec() *catalog.Spec {
 		Name: e.ID,
 		Kind: kind,
 		Repo: e.Repo,
-		Model: catalog.Pin{
+		Model: catalog.Artifact{
 			File:     e.File,
 			Revision: e.Revision,
 			Bytes:    e.Bytes,
-			SHA256:   e.SHA256,
 			URL:      e.URL,
 		},
 		Port: e.Port,
 	}
 	spec.Summary = fmt.Sprintf("custom — %s @ %.7s", e.Repo+"/"+e.File, e.Revision)
 	if e.MMProj != nil {
-		spec.MMProj = &catalog.Pin{File: e.MMProj.File, Revision: e.Revision, Bytes: e.MMProj.Bytes, SHA256: e.MMProj.SHA256, URL: e.MMProj.URL}
+		spec.MMProj = &catalog.Artifact{File: e.MMProj.File, Revision: e.Revision, Bytes: e.MMProj.Bytes, URL: e.MMProj.URL}
 	}
 	if kind == catalog.Image || kind == catalog.Video {
 		spec.Runtime = catalog.SD
 		spec.Args = e.Args
 	}
 	for _, c := range e.Companions {
-		spec.Companions = append(spec.Companions, catalog.Pin{Flag: c.Flag, File: c.File, Bytes: c.Bytes, SHA256: c.SHA256, URL: c.URL})
+		spec.Companions = append(spec.Companions, catalog.Artifact{Flag: c.Flag, File: c.File, Bytes: c.Bytes, URL: c.URL})
 	}
 	return spec
 }
@@ -382,16 +378,16 @@ func inferKind(repo, file string, hasMMProj bool) string {
 	return "text"
 }
 
-// HEAD the resolve URL: x-linked-etag is the LFS sha256, x-linked-size the
-// bytes, x-repo-commit the immutable revision to pin.
-func resolveHFPin(ctx context.Context, repo, rev, file string) (*catalog.Pin, error) {
+// HEAD the resolve URL for a file's size: x-linked-size for LFS files,
+// the body's own length otherwise.
+func hfFileSize(ctx context.Context, repo, rev, file string) (int64, error) {
 	url := fmt.Sprintf("%s/%s/resolve/%s/%s", HFHost, repo, rev, file)
 	req, err := hfRequest(ctx, http.MethodHead, url)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	// The pin headers live on huggingface.co's own response — following the
-	// CDN redirect would drop them.
+	// x-linked-size lives on huggingface.co's own response — following the
+	// CDN redirect would drop it.
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
@@ -400,26 +396,23 @@ func resolveHFPin(ctx context.Context, repo, rev, file string) (*catalog.Pin, er
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("could not reach huggingface.co: %w", err)
+		return 0, fmt.Errorf("could not reach huggingface.co: %w", err)
 	}
 	defer resp.Body.Close()
 	io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return nil, gatedError(repo)
+		return 0, gatedError(repo)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("huggingface.co answered HTTP %d for %s", resp.StatusCode, url)
+		return 0, fmt.Errorf("huggingface.co answered HTTP %d for %s", resp.StatusCode, url)
 	}
-	size, _ := strconv.ParseInt(resp.Header.Get("x-linked-size"), 10, 64)
-	sha := strings.Trim(resp.Header.Get("x-linked-etag"), `"`)
-	commit := resp.Header.Get("x-repo-commit")
-	if sha == "" || size == 0 {
-		return nil, fmt.Errorf("%s is not an LFS file — fornax can only pin LFS artifacts", file)
+	if size, err := strconv.ParseInt(resp.Header.Get("x-linked-size"), 10, 64); err == nil && size > 0 {
+		return size, nil
 	}
-	if commit == "" {
-		commit = rev
+	if resp.StatusCode < 300 && resp.ContentLength > 0 {
+		return resp.ContentLength, nil
 	}
-	return &catalog.Pin{File: file, Revision: commit, Bytes: size, SHA256: sha}, nil
+	return 0, fmt.Errorf("huggingface.co did not say how large %s is", file)
 }
 
 var idClean = regexp.MustCompile(`[^a-z0-9]+`)
@@ -520,7 +513,7 @@ type HFOptions struct {
 	Args                  []string
 }
 
-// Pin an hf: ref (or pasted huggingface.co URL) and save it as a custom
+// Save an hf: ref (or pasted huggingface.co URL) as a custom
 // model — or return the one a previous pull saved. Nothing is downloaded.
 func EnsureHF(ctx context.Context, ref string, opts HFOptions) (*catalog.Spec, error) {
 	entry, err := ensureHF(ctx, ref, opts.As, opts.Kind, opts.MMProj, opts.Rev, opts.With, opts.Args)
@@ -531,7 +524,7 @@ func EnsureHF(ctx context.Context, ref string, opts HFOptions) (*catalog.Spec, e
 }
 
 // Turn a ref into a saved custom model: parse, list the repo when the file
-// or projector needs picking, pin every artifact, and save. Nothing is
+// or projector needs picking, size every file, and save. Nothing is
 // downloaded — Pull() does that once the caller has a spec.
 func ensureHF(ctx context.Context, arg, as, kind, mmproj, revFlag string, with []Companion, sdArgs []string) (*customEntry, error) {
 	repo, revision, file, err := parseHFRef(arg, revFlag)
@@ -580,7 +573,7 @@ func ensureHF(ctx context.Context, arg, as, kind, mmproj, revFlag string, with [
 		fetching.Stop("")
 		return nil, fmt.Errorf("--kind %s needs a projector — %s has no mmproj-*.gguf; pass --mmproj <file>", kind, repo)
 	}
-	pin, err := resolveHFPin(ctx, repo, revision, file)
+	size, err := hfFileSize(ctx, repo, revision, file)
 	if err != nil {
 		fetching.Stop("")
 		return nil, err
@@ -598,27 +591,27 @@ func ensureHF(ctx context.Context, arg, as, kind, mmproj, revFlag string, with [
 		return nil, err
 	}
 	entry := &customEntry{
-		ID: id, Kind: kind, Repo: repo, Revision: pin.Revision,
-		File: file, Bytes: pin.Bytes, SHA256: pin.SHA256,
+		ID: id, Kind: kind, Repo: repo, Revision: revision,
+		File: file, Bytes: size,
 		Ref: canonicalHFRef(repo, revision, file), Want: revision,
 	}
 	if mmproj != "" {
-		proj, err := resolveHFPin(ctx, repo, revision, mmproj)
+		projSize, err := hfFileSize(ctx, repo, revision, mmproj)
 		if err != nil {
 			fetching.Stop("")
 			return nil, err
 		}
-		entry.MMProj = &customPin{File: mmproj, Bytes: proj.Bytes, SHA256: proj.SHA256}
+		entry.MMProj = &customFile{File: mmproj, Bytes: projSize}
 	}
 	for _, part := range splitCompanions(files, file) {
-		partPin, err := resolveHFPin(ctx, repo, revision, part)
+		partSize, err := hfFileSize(ctx, repo, revision, part)
 		if err != nil {
 			fetching.Stop("")
 			return nil, err
 		}
 		entry.Companions = append(entry.Companions, customCompanion{
-			File: part, Bytes: partPin.Bytes, SHA256: partPin.SHA256,
-			URL: fmt.Sprintf("https://huggingface.co/%s/resolve/%s/%s", repo, partPin.Revision, part),
+			File: part, Bytes: partSize,
+			URL: fmt.Sprintf("https://huggingface.co/%s/resolve/%s/%s", repo, revision, part),
 		})
 	}
 	for _, companion := range with {
@@ -627,14 +620,14 @@ func ensureHF(ctx context.Context, arg, as, kind, mmproj, revFlag string, with [
 			fetching.Stop("")
 			return nil, err
 		}
-		cPin, err := resolveHFPin(ctx, cRepo, cRev, cFile)
+		cSize, err := hfFileSize(ctx, cRepo, cRev, cFile)
 		if err != nil {
 			fetching.Stop("")
 			return nil, err
 		}
 		entry.Companions = append(entry.Companions, customCompanion{
-			Flag: companion.Flag, File: filepath.Base(cFile), Bytes: cPin.Bytes, SHA256: cPin.SHA256,
-			URL: fmt.Sprintf("https://huggingface.co/%s/resolve/%s/%s", cRepo, cPin.Revision, cFile),
+			Flag: companion.Flag, File: filepath.Base(cFile), Bytes: cSize,
+			URL: fmt.Sprintf("https://huggingface.co/%s/resolve/%s/%s", cRepo, cRev, cFile),
 		})
 	}
 	entry.Args = sdArgs

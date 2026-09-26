@@ -1,12 +1,12 @@
 package paths
 
 // Package paths is the filesystem layout under `~/.fornax` (or `$FORNAX_HOME`):
-//   engine/b11060/…     one unpacked llama.cpp release
+//   engine/llama-cuda/… one unpacked engine build per engine and backend
 //   engine/*.part       in-flight engine archives
+//   engine/*/installed  the upstream release that build came from
 //   models/<id>/<file>  installed weights + projectors
 //   models/<id>/*.part  in-flight downloads
-//   …/verified.sha256   the sha256 lines for that engine or model
-//   kev/                the kev runtime and its checkpoints
+//   kev/, laya/         the python runtimes and kev's checkpoints
 //   server.key          the loopback API key llama-server enforces
 //   server.log          the last server's output, kept for --events
 //   config.json         versioned settings
@@ -28,8 +28,9 @@ import (
 
 const (
 	ConfigFile = "Config.json"
-	Receipt    = "verified.sha256"
-	KeyFile    = "server.key"
+	// Written last into an engine or runtime dir: what was installed.
+	Receipt = "installed"
+	KeyFile = "server.key"
 )
 
 func Home() string {
@@ -46,12 +47,12 @@ func ModelDir(root string, spec *catalog.Spec) string {
 	return filepath.Join(root, "models", spec.ID)
 }
 
-func FilePath(root string, spec *catalog.Spec, pin *catalog.Pin) string {
-	return filepath.Join(ModelDir(root, spec), pin.File)
+func FilePath(root string, spec *catalog.Spec, file *catalog.Artifact) string {
+	return filepath.Join(ModelDir(root, spec), file.File)
 }
 
-func PartPath(root string, spec *catalog.Spec, pin *catalog.Pin) string {
-	return filepath.Join(ModelDir(root, spec), pin.File+".part")
+func PartPath(root string, spec *catalog.Spec, file *catalog.Artifact) string {
+	return filepath.Join(ModelDir(root, spec), file.File+".part")
 }
 
 func ModelFinal(root string, spec *catalog.Spec) string {
@@ -88,44 +89,26 @@ func EndpointURL(port int) string {
 	return fmt.Sprintf("http://127.0.0.1:%d/v1", port)
 }
 
-func WriteReceipt(dir string, spec *catalog.Spec) error {
-	var lines strings.Builder
-	for _, pin := range spec.Files() {
-		fmt.Fprintf(&lines, "%s  %s\n", pin.SHA256, pin.File)
-	}
-	return AtomicPrivate(filepath.Join(dir, Receipt), []byte(lines.String()))
-}
-
-func ReadReceipt(path string, spec *catalog.Spec) bool {
-	value, err := os.ReadFile(path)
-	if err != nil {
-		return false
-	}
-	got := map[string]string{}
-	for _, line := range strings.Split(string(value), "\n") {
-		if sha, name, ok := strings.Cut(line, "  "); ok {
-			got[name] = sha
-		}
-	}
-	for _, pin := range spec.Files() {
-		if got[pin.File] != pin.SHA256 {
-			return false
-		}
-	}
-	return true
-}
-
 func EngineInstalled(root string, spec *catalog.EngineSpec) bool {
 	info, err := os.Stat(EngineBinary(root, spec, spec.Binary))
 	if err != nil || info.IsDir() {
 		return false
 	}
-	data, err := os.ReadFile(filepath.Join(EngineDir(root, spec), Receipt))
-	return err == nil && strings.TrimSpace(string(data)) == spec.Receipt()
+	_, err = os.Stat(filepath.Join(EngineDir(root, spec), Receipt))
+	return err == nil
 }
 
-func WriteEngineReceipt(dir, sha256 string) error {
-	return AtomicPrivate(filepath.Join(dir, Receipt), []byte(sha256+"\n"))
+// The upstream release an installed engine came from, or "".
+func EngineRelease(root string, spec *catalog.EngineSpec) string {
+	data, err := os.ReadFile(filepath.Join(EngineDir(root, spec), Receipt))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func WriteEngineReceipt(dir, release string) error {
+	return AtomicPrivate(filepath.Join(dir, Receipt), []byte(release+"\n"))
 }
 
 // How much of a download has landed. A parallel download writes its
@@ -185,8 +168,8 @@ func WritePartRanges(part string, r *PartRanges) error {
 // Total resumable bytes a model already holds across its .part files.
 func ModelPartialBytes(root string, spec *catalog.Spec) int64 {
 	var total int64
-	for _, pin := range spec.Files() {
-		total += PartialBytes(PartPath(root, spec, pin), pin.Bytes)
+	for _, file := range spec.Files() {
+		total += PartialBytes(PartPath(root, spec, file), file.Bytes)
 	}
 	return total
 }

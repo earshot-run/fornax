@@ -2,14 +2,13 @@ package download
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -64,22 +63,25 @@ func TestFetchResumesAPartDownload(t *testing.T) {
 	if len(got) != len(payload) {
 		t.Fatalf("fetched %d bytes, want %d", len(got), len(payload))
 	}
-	sum := sha256.Sum256(payload)
-	if err := Verify(part, int64(len(payload)), hex.EncodeToString(sum[:])); err != nil {
-		t.Fatalf("verify: %v", err)
+	if string(got) != string(payload) {
+		t.Fatal("the resumed download does not match what the server sent")
 	}
 }
 
-func TestVerifyRejectsTamperedBytes(t *testing.T) {
-	root := t.TempDir()
-	path := filepath.Join(root, "model.gguf")
-	os.WriteFile(path, []byte("tampered"), 0o600)
-	sum := sha256.Sum256([]byte("honest!!"))
-	err := Verify(path, 8, hex.EncodeToString(sum[:]))
-	if err == nil {
-		t.Fatal("verify accepted a bad digest")
+func TestFetchWithoutASizeStreamsItAll(t *testing.T) {
+	payload := []byte(strings.Repeat("source", 1000))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.(http.Flusher).Flush()
+		w.Write(payload)
+	}))
+	defer server.Close()
+	part := filepath.Join(t.TempDir(), "src.tar.gz.part")
+	var seen int64
+	if err := Fetch(context.Background(), server.URL, 0, part, func(n int64) { seen = n }); err != nil {
+		t.Fatalf("fetch: %v", err)
 	}
-	if _, stat := os.Stat(path); !os.IsNotExist(stat) {
-		t.Fatal("a failed artifact was left behind")
+	got, _ := os.ReadFile(part)
+	if string(got) != string(payload) || seen != int64(len(payload)) {
+		t.Fatalf("got %d bytes, progress %d, want %d", len(got), seen, len(payload))
 	}
 }

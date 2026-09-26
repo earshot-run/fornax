@@ -82,26 +82,33 @@ func TestStudioProgressFollowsSDOutput(t *testing.T) {
 	job := &studioJob{studioItem: studioItem{ID: "0123456789abcdef", Kind: "image", Ext: "png", Steps: 8}, State: jobRunning, Total: 8}
 	lines := []string{
 		"|#############        | 33/128 - 18.64MB/s",
+		"[INFO   ] image.cpp:861  - generating image: 1/1 - seed 42",
 		"|======>              | 1/8 - 25.75s/it",
 		"|============>        | 2/8 - 13.62s/it",
 		"|==================>  | 3/8 - 2.00it/s",
 		"[INFO   ] image.cpp:894  - sampling completed, taking 130.83s",
 	}
-	for _, line := range lines[:2] {
-		s.progress(job, line)
+	s.progress(job, lines[0])
+	if job.Phase == "sampling" {
+		t.Fatal("a loading bar is not sampling")
 	}
+	s.progress(job, lines[1])
+	if job.Phase != "sampling" || job.Step != 0 {
+		t.Fatalf("once the prompt is encoded: phase %q step %d", job.Phase, job.Step)
+	}
+	s.progress(job, lines[2])
 	if job.Phase != "sampling" || job.Step != 1 || job.StepSeconds != 25.75 {
 		t.Fatalf("after step 1: phase %q step %d rate %v", job.Phase, job.Step, job.StepSeconds)
 	}
-	s.progress(job, lines[2])
+	s.progress(job, lines[3])
 	if job.StepSeconds != 13.62 {
 		t.Errorf("step 2 should replace the warm-up rate, got %v", job.StepSeconds)
 	}
-	s.progress(job, lines[3])
+	s.progress(job, lines[4])
 	if job.Step != 3 || job.StepSeconds != 0.5 {
 		t.Errorf("it/s should become 0.5 s/step at step 3, got step %d rate %v", job.Step, job.StepSeconds)
 	}
-	s.progress(job, lines[4])
+	s.progress(job, lines[5])
 	if job.Phase != "decoding" {
 		t.Errorf("phase after sampling = %q, want decoding", job.Phase)
 	}

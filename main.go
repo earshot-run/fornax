@@ -2,7 +2,7 @@
 // talk to, see with, listen with, benchmark and clean up — on any machine,
 // with or without Earshot.
 //
-// `fornax run hf:Qwen/Qwen3-4B-GGUF` fetches a pinned llama.cpp plus pinned
+// `fornax run hf:Qwen/Qwen3-4B-GGUF` fetches llama.cpp plus the
 // weights, serves an OpenAI-compatible API on loopback behind a generated
 // key, and hands the endpoint to a live Earshot daemon (or prints it to
 // paste). `ask`, `chat`, `see` and `hear` use models directly.
@@ -22,7 +22,7 @@ import (
 	"github.com/earshot-run/fornax/internal/ui"
 )
 
-const usage = `fornax downloads pinned llama.cpp builds and pinned weights, then runs OpenAI-compatible model servers on loopback.
+const usage = `fornax downloads llama.cpp builds and model weights, then runs OpenAI-compatible model servers on loopback.
 
 Fastest path: fornax run hf:Qwen/Qwen3-4B-GGUF
 
@@ -61,7 +61,6 @@ Run models:
 Workbench:
   show       Inspect a model's GGUF header — arch, params, quant, template
   search     Find GGUF repos on Hugging Face to pull
-  pins       Audit your pinned models and engines against upstream; print re-pins for what moved
   version    Print the build version
   upgrade    Check for a newer fornax release
   mcp        Serve MCP on stdio — agents call ask/see/hear/embed/imagine/animate/say/models
@@ -107,7 +106,6 @@ func commands() []command {
 		{"connect", func(_ context.Context, args []string) error { return cmdConnect(args) }},
 		{"show", func(_ context.Context, args []string) error { return cmdShow(args) }},
 		{"search", cmdSearch},
-		{"pins", cmdPins},
 		{"version", func(_ context.Context, args []string) error { return cmdVersion(args) }},
 		{"upgrade", cmdUpgrade},
 		{"mcp", cmdMCP},

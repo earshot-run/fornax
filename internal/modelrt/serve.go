@@ -31,7 +31,7 @@ const (
 	readyPoll   = 500 * time.Millisecond
 )
 
-// Download every artifact a model needs, verify each, promote into place.
+// Download every file a model needs and promote each into place.
 // Resumable: a `.part` keeps its bytes between runs.
 func ensureModel(ctx context.Context, root string, spec *catalog.Spec, progress func(int64)) error {
 	if spec.Runtime == catalog.Kev {
@@ -43,94 +43,76 @@ func ensureModel(ctx context.Context, root string, spec *catalog.Spec, progress 
 	// progress counts the whole model, so each file reports on top of the
 	// ones before it.
 	var offset int64
-	for _, pin := range spec.Files() {
-		if FileInstalled(root, spec, pin) {
-			offset += pin.Bytes
-			progress(offset)
-			continue
-		}
-		part, err := prepareCandidate(root, spec, pin)
-		if err != nil {
-			return err
-		}
-		if err := download.Fetch(ctx, spec.URL(pin), pin.Bytes, part, func(n int64) { progress(offset + n) }); err != nil {
-			return err
-		}
-		if err := download.Verify(part, pin.Bytes, pin.SHA256); err != nil {
-			return err
-		}
-		if err := promote(root, spec, pin, part); err != nil {
-			return err
-		}
-		offset += pin.Bytes
-	}
-	return paths.WriteReceipt(paths.ModelDir(root, spec), spec)
-}
-
-func FileInstalled(root string, spec *catalog.Spec, pin *catalog.Pin) bool {
-	info, err := os.Stat(paths.FilePath(root, spec, pin))
-	return err == nil && info.Size() == pin.Bytes
-}
-
-func prepareCandidate(root string, spec *catalog.Spec, pin *catalog.Pin) (string, error) {
-	// Pins can name nested paths (laya's tokenizer/, encoder/ dirs).
-	if err := paths.ProtectDir(filepath.Dir(paths.PartPath(root, spec, pin))); err != nil {
-		return "", err
-	}
-	part := paths.PartPath(root, spec, pin)
-	final := paths.FilePath(root, spec, pin)
-	// A verified-but-unpromoted file from an earlier crash resumes as a part.
-	if _, err := os.Stat(part); os.IsNotExist(err) {
-		if info, err := os.Stat(final); err == nil && info.Size() == pin.Bytes {
-			if err := os.Rename(final, part); err != nil {
-				return "", fmt.Errorf("could not resume model verification: %w", err)
+	for _, file := range spec.Files() {
+		if !FileInstalled(root, spec, file) {
+			size, err := fetchFile(ctx, root, spec, file, func(n int64) { progress(offset + n) })
+			if err != nil {
+				return err
 			}
+			file.Bytes = size
 		}
-	}
-	if info, err := os.Stat(part); err == nil && info.Size() > pin.Bytes {
-		os.Remove(part)
-	}
-	return part, nil
-}
-
-func promote(root string, spec *catalog.Spec, pin *catalog.Pin, part string) error {
-	final := paths.FilePath(root, spec, pin)
-	os.Remove(final)
-	if err := os.Rename(part, final); err != nil {
-		return fmt.Errorf("could not install model: %w", err)
+		offset += file.Bytes
+		progress(offset)
 	}
 	return nil
 }
 
-// The kev checkpoint: fetch the verified tarball, keep it (re-hash before
-// every spawn reads it), unpack the kev-<name>/ dir it contains.
+func FileInstalled(root string, spec *catalog.Spec, file *catalog.Artifact) bool {
+	info, err := os.Stat(paths.FilePath(root, spec, file))
+	return err == nil && !info.IsDir()
+}
+
+// Download one file to its .part and promote it; the size comes from the
+// server, so a file that changed upstream since it was listed still lands.
+func fetchFile(ctx context.Context, root string, spec *catalog.Spec, file *catalog.Artifact, progress func(int64)) (int64, error) {
+	part := paths.PartPath(root, spec, file)
+	// Files can name nested paths (laya's tokenizer/, encoder/ dirs).
+	if err := paths.ProtectDir(filepath.Dir(part)); err != nil {
+		return 0, err
+	}
+	url := spec.URL(file)
+	size, err := download.Size(ctx, url)
+	if err != nil {
+		return 0, err
+	}
+	if info, err := os.Stat(part); err == nil && size > 0 && info.Size() > size {
+		os.Remove(part)
+	}
+	if err := download.Fetch(ctx, url, size, part, progress); err != nil {
+		return 0, err
+	}
+	final := paths.FilePath(root, spec, file)
+	os.Remove(final)
+	if err := os.Rename(part, final); err != nil {
+		return 0, fmt.Errorf("could not install model: %w", err)
+	}
+	if info, err := os.Stat(final); err == nil {
+		size = info.Size()
+	}
+	return size, nil
+}
+
+// The kev checkpoint: fetch the tarball, keep it, unpack the kev-<name>/
+// dir it contains.
 func ensureKevModel(ctx context.Context, root string, spec *catalog.Spec, progress func(int64)) error {
-	pin := &spec.Model
-	if !FileInstalled(root, spec, pin) {
-		part, err := prepareCandidate(root, spec, pin)
+	file := &spec.Model
+	if !FileInstalled(root, spec, file) {
+		size, err := fetchFile(ctx, root, spec, file, progress)
 		if err != nil {
 			return err
 		}
-		if err := download.Fetch(ctx, spec.URL(pin), pin.Bytes, part, progress); err != nil {
-			return err
-		}
-		if err := download.Verify(part, pin.Bytes, pin.SHA256); err != nil {
-			return err
-		}
-		if err := promote(root, spec, pin, part); err != nil {
-			return err
-		}
+		file.Bytes = size
 	}
-	progress(pin.Bytes)
+	progress(file.Bytes)
 	if KevCkptDir(root, spec) != "" {
-		return paths.WriteReceipt(paths.ModelDir(root, spec), spec)
+		return nil
 	}
 	staging, err := os.MkdirTemp(root, ".ckpt-")
 	if err != nil {
 		return fmt.Errorf("could not stage the checkpoint: %w", err)
 	}
 	defer os.RemoveAll(staging)
-	if err := engine.UnpackTarGz(paths.FilePath(root, spec, pin), staging); err != nil {
+	if err := engine.UnpackTarGz(paths.FilePath(root, spec, file), staging); err != nil {
 		return err
 	}
 	entries, err := os.ReadDir(staging)
@@ -144,17 +126,6 @@ func ensureKevModel(ctx context.Context, root string, spec *catalog.Spec, progre
 	os.RemoveAll(dest)
 	if err := os.Rename(filepath.Join(staging, entries[0].Name()), dest); err != nil {
 		return fmt.Errorf("could not install the checkpoint: %w", err)
-	}
-	return paths.WriteReceipt(paths.ModelDir(root, spec), spec)
-}
-
-// Re-hash every pinned file before each spawn: the install receipt cannot
-// authorize bytes that may have changed since.
-func Rehash(root string, spec *catalog.Spec) error {
-	for _, pin := range spec.Files() {
-		if err := download.Verify(paths.FilePath(root, spec, pin), pin.Bytes, pin.SHA256); err != nil {
-			return err
-		}
 	}
 	return nil
 }
@@ -382,13 +353,6 @@ func Serve(ctx context.Context, id string, port, ctxSize int, noConnect bool, id
 	if spec.Runtime == catalog.Apple {
 		return runApple(ctx, root, spec, servePort, ctxSize != catalog.ContextWindow, noConnect, idle)
 	}
-	events.Emit("stage", map[string]any{"stage": "verifying", "model": spec.ID})
-	verifying := ui.Spin("verifying " + spec.ID)
-	if err := Rehash(root, spec); err != nil {
-		verifying.Stop("")
-		return err
-	}
-	verifying.Stop("")
 	if err := portFree(servePort); err != nil {
 		return err
 	}

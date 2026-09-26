@@ -47,8 +47,8 @@ fornax ask hf:Qwen/Qwen3-4B-GGUF "Explain what a GGUF file is in one sentence."
 ```
 
 If Hugging Face is slow or unavailable where you live, set `HF_ENDPOINT` to
-an HTTPS mirror origin (for example `https://hf-mirror.com`). Model pins and
-hash checks stay the same. Mirrors do not receive your Hugging Face token,
+an HTTPS mirror origin (for example `https://hf-mirror.com`). Mirrors do not
+receive your Hugging Face token,
 so use the official endpoint for gated models. See the
 [download reference](docs/reference.md#downloads-and-hugging-face-tokens).
 
@@ -102,9 +102,8 @@ CPU), and `fornax doctor` tells you which one it chose and why.
 
 ## Safe by default
 
-Every download is pinned to an exact version and checked against its hash,
-and model files are checked again before each run. Models only listen on
-your own machine and need a key that fornax generates for you.
+Models only listen on your own machine and need a key that fornax generates
+for you.
 
 ## For scripts and agents
 
