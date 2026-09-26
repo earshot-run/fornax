@@ -85,9 +85,9 @@ go install github.com/earshot-run/fornax@latest
 ```
 
 `fornax upgrade` self-updates a release install in place; `-check` only
-reports. While the repo is private the installer and `upgrade` use a
-logged-in `gh` for auth — anonymous curl works once it's public. Shell
-completions: `fornax completion zsh|bash|fish`.
+reports. The installer uses `gh` when it's authenticated, or downloads the
+public release with curl otherwise. Shell completions:
+`fornax completion zsh|bash|fish`.
 
 ## How it connects to Earshot
 
