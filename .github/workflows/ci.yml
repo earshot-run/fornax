@@ -16,6 +16,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.24"
+          cache-dependency-path: go.mod
           cache: true
       - name: gofmt
         run: test -z "$(gofmt -l .)"
