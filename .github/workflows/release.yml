@@ -45,10 +45,22 @@ jobs:
             gh release create "$RELEASE_TAG" dist/* --title "$RELEASE_TAG" --generate-notes
             exit 0
           fi
+          # GITHUB_TOKEN cannot tag a commit whose workflows differ from main:
+          # https://docs.github.com/rest/releases/releases#create-a-release
+          workflow_tree() {
+            gh api "repos/$GITHUB_REPOSITORY/git/trees/$1?recursive=1" \
+              --jq '.tree[] | select(.path == ".github/workflows") | .sha'
+          }
+          built_workflows=$(workflow_tree "$GITHUB_SHA")
+          current_workflows=$(workflow_tree main)
+          if [ "$built_workflows" != "$current_workflows" ]; then
+            echo "A newer workflow is on main; leaving publication to that run."
+            exit 0
+          fi
           if gh release view main-build >/dev/null 2>&1; then
             published=$(gh release download main-build -p version.txt -O -)
-            status=$(gh api "repos/$GITHUB_REPOSITORY/compare/${published#main-}...$GITHUB_SHA" --jq .status)
-            if [ "$status" != ahead ] && [ "$status" != identical ]; then
+            comparison=$(gh api "repos/$GITHUB_REPOSITORY/compare/${published#main-}...$GITHUB_SHA" --jq .status)
+            if [ "$comparison" != ahead ] && [ "$comparison" != identical ]; then
               echo "Keeping $published; this run does not advance the published main build."
               exit 0
             fi
@@ -63,11 +75,11 @@ jobs:
           fi
           printf '%s\n' "$RELEASE_TAG" > version.txt
           if ! gh release view main-build >/dev/null 2>&1; then
-            gh release create main-build version.txt --target "$GITHUB_SHA" --prerelease --latest=false \
+            gh release create main-build version.txt --target main --prerelease --latest=false \
               --title 'Latest main build' --notes 'The installer follows version.txt to the latest successful main build.'
           else
             gh release upload main-build version.txt --clobber
           fi
           printf 'Latest successful main build: [%s](https://github.com/%s/releases/tag/%s).\n' \
             "$RELEASE_TAG" "$GITHUB_REPOSITORY" "$RELEASE_TAG" > main-notes.md
-          gh release edit main-build --notes-file main-notes.md
+          gh release edit main-build --target main --notes-file main-notes.md
