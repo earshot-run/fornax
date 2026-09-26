@@ -140,8 +140,8 @@ func cmdPins(ctx context.Context, args []string) error {
 	if only == "" {
 		noteLatestEngine(ctx, "ggml-org/llama.cpp", catalog.EngineVersion)
 		if len(sdEngines) > 0 {
-			for _, eng := range sdEngines {
-				if _, _, tag, _, ok := parseGHRelease(eng.URL); ok {
+			for _, variants := range sdEngines {
+				if _, _, tag, _, ok := parseGHRelease(variants[0].URL); ok {
 					noteLatestEngine(ctx, "leejet/stable-diffusion.cpp", tag)
 				}
 				break
@@ -209,24 +209,30 @@ func pinJobs(only string) ([]pinJob, error) {
 			addSpec(store.Models[i].spec())
 		}
 	}
-	addEngine := func(engines map[string]*catalog.EngineSpec) {
+	// Every build on every platform, and every part of each build.
+	addEngine := func(engines map[string][]*catalog.EngineSpec) {
 		platforms := make([]string, 0, len(engines))
 		for p := range engines {
 			platforms = append(platforms, p)
 		}
 		sort.Strings(platforms)
 		for _, p := range platforms {
-			eng := engines[p]
-			_, repo, tag, _, _ := parseGHRelease(eng.URL)
-			id := repo + " " + tag
-			jobs = append(jobs, pinJob{id: id, file: eng.Archive,
-				check: func(ctx context.Context) pinRow {
-					row := auditReleaseAsset(ctx, eng.URL, "", eng.Bytes, eng.SHA256)
-					if row.verdict == pinFresh {
-						row.note = p
-					}
-					return row
-				}})
+			for _, eng := range engines[p] {
+				_, repo, tag, _, _ := parseGHRelease(eng.URL)
+				id := repo + " " + tag
+				note := p + " " + string(eng.Backend)
+				archives := append([]catalog.EnginePart{{URL: eng.URL, Bytes: eng.Bytes, SHA256: eng.SHA256, Archive: eng.Archive}}, eng.Parts...)
+				for _, archive := range archives {
+					jobs = append(jobs, pinJob{id: id, file: archive.Archive,
+						check: func(ctx context.Context) pinRow {
+							row := auditReleaseAsset(ctx, archive.URL, "", archive.Bytes, archive.SHA256)
+							if row.verdict == pinFresh {
+								row.note = note
+							}
+							return row
+						}})
+				}
+			}
 		}
 	}
 	addEngine(catalog.Engines())

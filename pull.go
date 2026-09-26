@@ -99,9 +99,9 @@ func resolve(ctx context.Context, arg string) (*catalog.Spec, *catalog.EngineSpe
 		return spec, nil, nil
 	}
 	if spec.Runtime == catalog.SD {
-		eng := engineSD()
-		if eng == nil {
-			return nil, nil, fmt.Errorf("fornax does not have a pinned stable-diffusion.cpp for %s/%s yet", runtime.GOOS, runtime.GOARCH)
+		eng, err := sdEngine()
+		if err != nil {
+			return nil, nil, err
 		}
 		return spec, eng, nil
 	}
@@ -112,8 +112,12 @@ func resolve(ctx context.Context, arg string) (*catalog.Spec, *catalog.EngineSpe
 	return spec, eng, nil
 }
 
+// This machine's llama.cpp build; an error means none fits.
 func llamaEngine() (*catalog.EngineSpec, error) {
-	eng := catalog.Engine()
+	eng, err := pickEngine(catalog.EngineVariants(), probeGPU(), os.Getenv("FORNAX_BACKEND"))
+	if err != nil {
+		return nil, err
+	}
 	if eng == nil {
 		return nil, fmt.Errorf("fornax does not have a pinned llama.cpp for %s/%s yet", runtime.GOOS, runtime.GOARCH)
 	}
@@ -126,11 +130,11 @@ func pull(ctx context.Context, spec *catalog.Spec, eng *catalog.EngineSpec) erro
 		return err
 	}
 	if spec.Runtime == catalog.Llama && !paths.EngineInstalled(root, eng) {
-		bar := ui.NewProgress("engine", eng.Bytes)
+		bar := ui.NewProgress("engine", eng.TotalBytes())
 		if err := engine.Ensure(ctx, root, eng, bar.Set); err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "%s engine llama.cpp %s installed\n", ui.Green("✓"), catalog.EngineVersion)
+		fmt.Fprintf(os.Stderr, "%s engine llama.cpp %s (%s) installed\n", ui.Green("✓"), catalog.EngineVersion, eng.Backend)
 	}
 	if spec.Runtime == catalog.Kev {
 		bar := ui.NewProgress("kev runtime", kevSource.Bytes)
@@ -144,12 +148,12 @@ func pull(ctx context.Context, spec *catalog.Spec, eng *catalog.EngineSpec) erro
 			return err
 		}
 	}
-	if spec.Runtime == catalog.SD && !sdInstalled(root, eng) {
-		bar := ui.NewProgress("sd engine", eng.Bytes)
-		if err := ensureSDEngine(ctx, root, eng, bar.Set); err != nil {
+	if spec.Runtime == catalog.SD && !paths.EngineInstalled(root, eng) {
+		bar := ui.NewProgress("sd engine", eng.TotalBytes())
+		if err := engine.Ensure(ctx, root, eng, bar.Set); err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "%s engine stable-diffusion.cpp %s installed\n", ui.Green("✓"), sdVersion)
+		fmt.Fprintf(os.Stderr, "%s engine stable-diffusion.cpp %s (%s) installed\n", ui.Green("✓"), sdVersion, eng.Backend)
 	}
 	if modelInstalled(root, spec) {
 		fmt.Fprintf(os.Stderr, "%s\n", ui.Dim(spec.ID+" already installed"))

@@ -164,6 +164,20 @@ func runSayQuiet(ctx context.Context, root string, eng *catalog.EngineSpec, spec
 // One llama-tts run: every caller synthesizes to a file and narrates on
 // stderr, so stdout stays whatever the command itself writes.
 func runTTS(ctx context.Context, root string, eng *catalog.EngineSpec, spec *catalog.Spec, prompt, out, voice, lang string, frames int) error {
+	cmd := ttsCommand(ctx, root, eng, spec, prompt, out, voice, lang, frames)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("llama-tts exited: %w", err)
+	}
+	return nil
+}
+
+// The llama-tts invocation for one synthesis; the caller wires its output.
+func ttsCommand(ctx context.Context, root string, eng *catalog.EngineSpec, spec *catalog.Spec, prompt, out, voice, lang string, frames int) *exec.Cmd {
 	binary := paths.EngineBinary(root, eng, eng.TTS)
 	args := []string{
 		"-m", paths.ModelFinal(root, spec),
@@ -180,17 +194,9 @@ func runTTS(ctx context.Context, root string, eng *catalog.EngineSpec, spec *cat
 	}
 	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Dir = filepath.Dir(binary)
-	cmd.Env = scrubbedEnv(root)
+	cmd.Env = engineEnv(root, binary)
 	cmd.Stdin = nil
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return fmt.Errorf("llama-tts exited: %w", err)
-	}
-	return nil
+	return cmd
 }
 
 // `chat -speak` voice: the first installed speech model, or none.
@@ -206,8 +212,8 @@ func speechSpec(root string) *catalog.Spec {
 // Synthesize text to a temp WAV and play it through the OS player.
 func speakText(ctx context.Context, spec *catalog.Spec, text string) error {
 	root := paths.Home()
-	eng := catalog.Engine()
-	if eng == nil || eng.TTS == "" {
+	eng, err := llamaEngine()
+	if err != nil || eng.TTS == "" {
 		return fmt.Errorf("no speech engine on this platform")
 	}
 	tmp, err := os.CreateTemp("", "fornax-speak-*.wav")

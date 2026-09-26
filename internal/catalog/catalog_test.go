@@ -74,19 +74,42 @@ func TestKevPinsPointAtGitHub(t *testing.T) {
 	}
 }
 
-func TestEnginePinIsComplete(t *testing.T) {
-	spec := Engine()
-	if spec == nil {
-		t.Skip("unsupported platform")
+func TestEnginePinsAreComplete(t *testing.T) {
+	for platform, variants := range Engines() {
+		if len(variants) == 0 || (variants[0].Backend != CPU && variants[0].Backend != Metal) {
+			t.Errorf("%s: the plain build must come first", platform)
+		}
+		dirs := map[string]bool{}
+		for _, spec := range variants {
+			if len(spec.SHA256) != 64 || spec.Bytes <= 0 || spec.Binary == "" || spec.Bench == "" {
+				t.Errorf("%s %s: incomplete engine pin", platform, spec.Archive)
+			}
+			if !strings.HasSuffix(spec.URL, spec.Archive) {
+				t.Errorf("%s: url does not end with the pinned archive", spec.Archive)
+			}
+			if dirs[spec.DirName] {
+				t.Errorf("%s: two builds share the directory %s", platform, spec.DirName)
+			}
+			dirs[spec.DirName] = true
+			if (spec.Backend == CUDA) != (len(spec.Parts) > 0 && spec.MinDriver > 0) {
+				t.Errorf("%s: a CUDA build needs its runtime part and a minimum driver", spec.Archive)
+			}
+			for _, part := range spec.Parts {
+				if len(part.SHA256) != 64 || part.Bytes <= 0 || !strings.HasSuffix(part.URL, part.Archive) {
+					t.Errorf("%s: incomplete part %s", spec.Archive, part.Archive)
+				}
+			}
+		}
 	}
-	if len(spec.SHA256) != 64 {
-		t.Error("sha256 is not 64 hex chars")
+}
+
+// A CPU install from before backends existed keeps its directory.
+func TestPlainBuildKeepsTheBareVersionDir(t *testing.T) {
+	if EngineDir(EngineVersion, CPU) != EngineVersion || EngineDir(EngineVersion, Metal) != EngineVersion {
+		t.Error("the plain build moved directories")
 	}
-	if !strings.HasSuffix(spec.URL, spec.Archive) {
-		t.Error("url does not end with the pinned archive")
-	}
-	if spec.Binary == "" || spec.Bench == "" || spec.Bytes <= 0 {
-		t.Error("incomplete engine pin")
+	if EngineDir(EngineVersion, CUDA) == EngineVersion {
+		t.Error("the CUDA build shares the plain build's directory")
 	}
 }
 

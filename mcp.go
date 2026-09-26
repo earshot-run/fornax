@@ -403,7 +403,11 @@ func mcpSD(ctx context.Context, args json.RawMessage, verb string, kind catalog.
 	}
 	var extra []string
 	if in.Image != "" {
-		extra = append(extra, "-i", in.Image)
+		abs, err := filepath.Abs(in.Image)
+		if err != nil {
+			return "", err
+		}
+		extra = append(extra, "-i", abs)
 	}
 	if err := mcpMuteStdout(func() error {
 		root, eng, err := prepareSD(ctx, spec)

@@ -206,13 +206,13 @@ func spawnServer(root string, eng *catalog.EngineSpec, spec *catalog.Spec, port 
 	if spec.Kind == catalog.Rerank {
 		args = append(args, "--reranking")
 	}
-	if runtime.GOOS != "windows" {
+	if runtime.GOOS != "windows" || eng.Backend != catalog.CPU {
 		// The layer count is ignored where there is no offload backend.
 		args = append(args, "--n-gpu-layers", "999")
 	}
 	cmd := exec.Command(binary, args...)
 	cmd.Dir = filepath.Dir(binary)
-	cmd.Env = scrubbedEnv(root)
+	cmd.Env = engineEnv(root, binary)
 	cmd.Stdin = nil
 	if logPath != "" {
 		log, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)

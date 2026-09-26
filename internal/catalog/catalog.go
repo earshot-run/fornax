@@ -173,16 +173,69 @@ const (
 	Zip
 )
 
+// One pinned build of an engine (llama.cpp or stable-diffusion.cpp) for one
+// platform and one accelerator.
 type EngineSpec struct {
+	// What it is, for messages: "llama.cpp", "stable-diffusion.cpp".
+	Name    string
 	URL     string
 	Bytes   int64
 	SHA256  string
 	Archive string
 	Kind    ArchiveKind
+	// The directory under engine/ it installs to; each backend gets its own
+	// so switching accelerators never reuses the wrong build.
+	DirName string
+	// cpu, metal, vulkan or cuda.
+	Backend Backend
+	// cuda only: the oldest NVIDIA driver (major version) the build runs on.
+	MinDriver int
+	// Linux only: the oldest glibc the build loads against ("2.38"), set by
+	// the Ubuntu release upstream built it on.
+	MinGlibc string
+	// Archives unpacked beside Binary after the main one — the CUDA runtime
+	// ships apart from the build.
+	Parts []EnginePart
 	// The binaries inside the unpacked archive, relative to its root.
 	Binary string
 	Bench  string
 	TTS    string
+}
+
+type EnginePart struct {
+	URL     string
+	Bytes   int64
+	SHA256  string
+	Archive string
+	Kind    ArchiveKind
+}
+
+type Backend string
+
+const (
+	CPU    Backend = "cpu"
+	Metal  Backend = "metal"
+	Vulkan Backend = "vulkan"
+	CUDA   Backend = "cuda"
+)
+
+// Everything the install downloads.
+func (e *EngineSpec) TotalBytes() int64 {
+	total := e.Bytes
+	for _, part := range e.Parts {
+		total += part.Bytes
+	}
+	return total
+}
+
+// What the install receipt records: every archive digest, so a build is
+// only "installed" when all of its parts are.
+func (e *EngineSpec) Receipt() string {
+	digests := []string{e.SHA256}
+	for _, part := range e.Parts {
+		digests = append(digests, part.SHA256)
+	}
+	return strings.Join(digests, " ")
 }
 
 var models = []Spec{
@@ -356,50 +409,96 @@ func Models() []*Spec {
 	return specs
 }
 
-// Every platform's pinned llama.cpp build — `fornax pins` audits all six,
-// not just the local one.
-var engines = func() map[string]*EngineSpec {
+// Every platform's pinned llama.cpp builds, the plain one first — `fornax
+// pins` audits all of them, not just the local one. Sizes and digests are
+// GitHub's own asset digests for b11060.
+var engines = func() map[string][]*EngineSpec {
 	const base = "https://github.com/ggml-org/llama.cpp/releases/download/b11060/"
-	tarball := func(name string, bytes int64, sha256 string) *EngineSpec {
+	tarball := func(name string, backend Backend, bytes int64, sha256 string) *EngineSpec {
 		return &EngineSpec{
+			Name:    "llama.cpp",
 			URL:     base + "llama-b11060-bin-" + name + ".tar.gz",
 			Bytes:   bytes,
 			SHA256:  sha256,
 			Archive: "llama-b11060-bin-" + name + ".tar.gz",
 			Kind:    TarGz,
+			DirName: EngineDir(EngineVersion, backend),
+			Backend: backend,
 			Binary:  "llama-b11060/llama-server",
 			Bench:   "llama-b11060/llama-bench",
 			TTS:     "llama-b11060/llama-tts",
 		}
 	}
-	zipball := func(name string, bytes int64, sha256 string) *EngineSpec {
+	zipball := func(name string, backend Backend, bytes int64, sha256 string) *EngineSpec {
 		return &EngineSpec{
+			Name:    "llama.cpp",
 			URL:     base + "llama-b11060-bin-" + name + ".zip",
 			Bytes:   bytes,
 			SHA256:  sha256,
 			Archive: "llama-b11060-bin-" + name + ".zip",
 			Kind:    Zip,
+			DirName: EngineDir(EngineVersion, backend),
+			Backend: backend,
 			Binary:  "llama-server.exe",
 			Bench:   "llama-bench.exe",
 			TTS:     "llama-tts.exe",
 		}
 	}
-	return map[string]*EngineSpec{
-		"darwin/arm64":  tarball("macos-arm64", 11_178_367, "f38d330eb9e097316cbda7838d99d5414ab4195f8f96b303949ec80547168592"),
-		"darwin/amd64":  tarball("macos-x64", 11_216_404, "c3799ae5495069f6d54be6dd0835a487b28f66868a83a52f542aa65a7e711dc9"),
-		"linux/amd64":   tarball("ubuntu-x64", 16_877_346, "0ef19058e60555e9a318baa9d8490335505e6207dafdb936fb07f9623368ec46"),
-		"linux/arm64":   tarball("ubuntu-arm64", 13_498_203, "3c268f1a25f2c658eaf0c8b086bcfde9d1f40221802e87ae6dc2ae849b72daf1"),
-		"windows/amd64": zipball("win-cpu-x64", 18_463_147, "d0393b195149c4042349f8103cd6c7519546c71de4288a8a149de4c55366354b"),
-		"windows/arm64": zipball("win-cpu-arm64", 12_013_604, "dc07b5313dfdee239a7e06a58b766b1811da9102f9f46e59865c28e02d242e2a"),
+	cuda := func(eng *EngineSpec, minDriver int, part EnginePart) *EngineSpec {
+		eng.MinDriver = minDriver
+		part.URL = base + part.Archive
+		eng.Parts = []EnginePart{part}
+		return eng
+	}
+	glibc := func(eng *EngineSpec, version string) *EngineSpec {
+		eng.MinGlibc = version
+		return eng
+	}
+	return map[string][]*EngineSpec{
+		"darwin/arm64": {tarball("macos-arm64", Metal, 11_178_367, "f38d330eb9e097316cbda7838d99d5414ab4195f8f96b303949ec80547168592")},
+		"darwin/amd64": {tarball("macos-x64", CPU, 11_216_404, "c3799ae5495069f6d54be6dd0835a487b28f66868a83a52f542aa65a7e711dc9")},
+		// Upstream builds the x64 CPU and Vulkan tarballs on Ubuntu 22.04 and
+		// everything else on 24.04 (release.yml at b11060); a 24.04 build
+		// fails to load on 22.04 with "GLIBC_2.38 not found".
+		"linux/amd64": {
+			glibc(tarball("ubuntu-x64", CPU, 16_877_346, "0ef19058e60555e9a318baa9d8490335505e6207dafdb936fb07f9623368ec46"), "2.35"),
+			// CUDA 12.8 rather than 13.x: it runs on drivers from 570 up.
+			glibc(cuda(tarball("ubuntu-cuda-12.8-x64", CUDA, 168_841_771, "cf454c2dac2931f18fc4146ea68c8bf3a9e86c7daa6985e93013e7a8025513f7"), 570,
+				EnginePart{Archive: "cudart-llama-b11060-bin-ubuntu-cuda-12.8-x64.tar.gz", Kind: TarGz, Bytes: 594_373_580, SHA256: "b55cfd65833f4f45fa2187d4d8542772ceef6e5332138669739b3e008150233d"}), "2.38"),
+			glibc(tarball("ubuntu-vulkan-x64", Vulkan, 30_384_959, "b7e4619e115b77cd8c2d1280c19eee1e3c38d2dbb559713646525ae2cdb47ca2"), "2.35"),
+		},
+		"linux/arm64": {
+			glibc(tarball("ubuntu-arm64", CPU, 13_498_203, "3c268f1a25f2c658eaf0c8b086bcfde9d1f40221802e87ae6dc2ae849b72daf1"), "2.38"),
+			glibc(cuda(tarball("ubuntu-cuda-13.3-arm64", CUDA, 145_086_312, "8780a4612d3d769138f486c2293e679329134bd22d85b0eb8e959c61f9f2f120"), 580,
+				EnginePart{Archive: "cudart-llama-b11060-bin-ubuntu-cuda-13.3-arm64.tar.gz", Kind: TarGz, Bytes: 518_393_016, SHA256: "49e64bdc2c8a8df4fe5ca1ca5ac08468e44c103e9b3bd167f7732eaa22d29b5d"}), "2.38"),
+			glibc(tarball("ubuntu-vulkan-arm64", Vulkan, 24_336_208, "a2d9aa237023edf0a62eb78d29c3d731b9715b3a09df35a56f09feaf224926ca"), "2.38"),
+		},
+		"windows/amd64": {
+			zipball("win-cpu-x64", CPU, 18_463_147, "d0393b195149c4042349f8103cd6c7519546c71de4288a8a149de4c55366354b"),
+			cuda(zipball("win-cuda-12.4-x64", CUDA, 254_222_353, "baad8a4e4f083165aac446c3ad0d32d438980e6ece5a3a0a69cfb45b7b262916"), 551,
+				EnginePart{Archive: "cudart-llama-bin-win-cuda-12.4-x64.zip", Kind: Zip, Bytes: 391_443_627, SHA256: "8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6"}),
+			zipball("win-vulkan-x64", Vulkan, 31_848_012, "a5e9dee3b0c6c688080b5489efcf9c4162c354b1e8a76288f5391e99c91d6d40"),
+		},
+		"windows/arm64": {zipball("win-cpu-arm64", CPU, 12_013_604, "dc07b5313dfdee239a7e06a58b766b1811da9102f9f46e59865c28e02d242e2a")},
 	}
 }()
 
-func Engine() *EngineSpec {
+// The CPU and Metal builds keep the bare version as their directory, so an
+// install from before backends existed stays valid.
+func EngineDir(version string, backend Backend) string {
+	if backend == CPU || backend == Metal {
+		return version
+	}
+	return version + "-" + string(backend)
+}
+
+// This platform's llama.cpp builds, the plain one first; nil when there are none.
+func EngineVariants() []*EngineSpec {
 	return engines[runtime.GOOS+"/"+runtime.GOARCH]
 }
 
-// Engines is every platform's pinned llama.cpp build, keyed "goos/goarch".
-func Engines() map[string]*EngineSpec {
+// Engines is every platform's pinned llama.cpp builds, keyed "goos/goarch".
+func Engines() map[string][]*EngineSpec {
 	return engines
 }
 

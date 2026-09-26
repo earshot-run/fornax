@@ -155,8 +155,8 @@ func cmdList(args []string) error {
 		fmt.Printf("  %s %s\n", ui.Cell("", idWidth, nil), ui.Dim(spec.Summary))
 	}
 	engineState := "unsupported platform"
-	if catalog.Engine() != nil {
-		engineState = "supported"
+	if eng, err := llamaEngine(); err == nil {
+		engineState = "supported, " + string(eng.Backend)
 	}
 	fmt.Printf("\n  %s\n", ui.Dim(fmt.Sprintf("this machine: %s RAM · llama.cpp %s (%s)",
 		ui.HumanSize(memory), catalog.EngineVersion, engineState)))

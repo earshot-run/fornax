@@ -43,16 +43,21 @@ func TestDrawSizeParses(t *testing.T) {
 	}
 }
 
-func TestSDEnginePinIsComplete(t *testing.T) {
-	eng := engineSD()
-	if eng == nil {
-		t.Skip("unsupported platform")
-	}
-	if len(eng.SHA256) != 64 || eng.Bytes <= 0 || eng.Binary == "" {
-		t.Fatal("incomplete sd engine pin")
-	}
-	if !strings.HasSuffix(eng.URL, eng.Archive) {
-		t.Fatal("url does not end with the pinned archive")
+func TestSDEnginePinsAreComplete(t *testing.T) {
+	for platform, variants := range sdEngines {
+		for _, eng := range variants {
+			if len(eng.SHA256) != 64 || eng.Bytes <= 0 || eng.Binary == "" || eng.DirName == "" || eng.Backend == "" {
+				t.Errorf("%s %s: incomplete sd engine pin", platform, eng.Archive)
+			}
+			if !strings.HasSuffix(eng.URL, eng.Archive) {
+				t.Errorf("%s: url does not end with the pinned archive", eng.Archive)
+			}
+			for _, part := range eng.Parts {
+				if len(part.SHA256) != 64 || part.Bytes <= 0 || !strings.HasSuffix(part.URL, part.Archive) {
+					t.Errorf("%s: incomplete part %s", eng.Archive, part.Archive)
+				}
+			}
+		}
 	}
 }
 

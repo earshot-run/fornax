@@ -50,6 +50,7 @@ it's the model inside macOS.
 | `fornax see <model> <image> [question]` | Ask a vision model about a png/jpg/webp/gif |
 | `fornax hear <model> <audio> [question]` | Ask an audio model about a take; transcribes by default |
 | `fornax imagine <model> "prompt"` | Generate an image with a model you added — `-o`, `-image`, `-steps`, `-seed`, `-size WxH`, `-neg` |
+| `fornax studio` | Image studio in the browser — queue prompts, watch progress, browse the gallery, edit with reference images. Loopback only, behind your key; images live in `~/.fornax/studio`. `-on [user@]host` runs it on another machine (a home GPU box, a rented cloud GPU) over ssh and opens it here through a tunnel — the remote needs fornax installed and stays loopback-only |
 | `fornax animate <model> "prompt"` | Generate a video clip with a model you added — the same flags plus `-frames` |
 | `fornax say <model> "text"` | Speak text to a WAV — `-o out.wav` (or `-` for stdout), `-voice ref.wav` clones a voice, `-lang en\|zh\|…` |
 | `fornax embed <model> [text]` | Turn text into a vector — one-line JSON on stdout |
@@ -181,6 +182,18 @@ require a generated API key (`~/.fornax/server.key`, mode 600).
 ```
 
 `FORNAX_HOME` overrides the home directory.
+
+## GPUs
+
+Each engine is pinned per accelerator, and fornax picks the build from what
+the machine has: Metal on Apple Silicon; CUDA when an NVIDIA driver is
+present (Linux and Windows, with the CUDA runtime pinned and fetched
+alongside, so no toolkit install); Vulkan for other GPUs, or an NVIDIA card
+whose driver is too old for the CUDA build; the CPU build otherwise.
+stable-diffusion.cpp has no Linux CUDA build upstream, so image and video on
+Linux run through Vulkan. `fornax doctor` shows what was found and which
+build runs; `FORNAX_BACKEND=cpu|cuda|vulkan` forces one. Each build installs
+to its own `engine/` directory, so switching never reuses the wrong one.
 
 ## Models
 

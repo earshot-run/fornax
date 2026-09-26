@@ -41,6 +41,14 @@ tell. When one is warranted, add a `modelSpec` to `models` in `catalog.go`;
 `TestEveryPinIsComplete` audits the pin. A pulled model never shares a port
 — customs get 7401+.
 
+Engine builds are pinned per platform *and* backend — `engines` in
+`catalog.go` for llama.cpp, `sdEngines` in `imagine.go` — plain build
+first, GPU builds after, with a CUDA build's runtime archive as a `Part`.
+Take sizes and digests from GitHub's asset metadata
+(`gh api repos/<owner>/<repo>/releases/tags/<tag> --jq '.assets[]|[.name,.size,.digest]'`);
+there is no need to download a 600 MB runtime to hash it. `backend.go`
+picks among them.
+
 `fornax pins` audits every pin against upstream — built-in HF `main` HEADs,
 the kev-family release tag, the kev/laya source commits, and every saved
 custom entry — and prints paste-ready re-pins for anything that moved. Run
@@ -68,6 +76,9 @@ completions read the same table. Give its flag set
 | `judge.go` | `judge` + the `/v1/systemone` client and answer printer both runtimes share |
 | `apple.go` + `bridge.swift` | Apple Foundation Models: Swift stdio bridge + loopback adapter |
 | `imagine.go` | stable-diffusion.cpp engine + `imagine`/`animate` |
+| `backend.go` | which engine build (cpu/metal/vulkan/cuda) this machine runs |
+| `studio.go`, `studio_*.go` + `studio/` | `studio` — browser UI: the queue and library (core), sd image/video, speech, chat over a warm server; the page is embedded from `studio/` |
+| `studio_remote.go` | `studio -on host` — runs the studio on another machine over an ssh tunnel; the `-leash` that ends it with the connection |
 | `say.go` | `say` — text → WAV via `llama-tts` in the llama engine |
 | `talk.go`, `record.go` | `talk` (transcribe→answer→speak), `record` (mic → WAV) |
 | `rerank.go` | `rerank` — `/v1/rerank` client + the reranker spec |

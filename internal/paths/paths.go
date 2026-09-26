@@ -58,16 +58,22 @@ func ModelFinal(root string, spec *catalog.Spec) string {
 	return FilePath(root, spec, &spec.Model)
 }
 
-func EngineDir(root string) string {
-	return filepath.Join(root, "engine", catalog.EngineVersion)
+// Where every engine build installs, one directory each.
+func EnginesDir(root string) string {
+	return filepath.Join(root, "engine")
 }
 
-func EnginePart(root string, spec *catalog.EngineSpec) string {
-	return filepath.Join(root, "engine", spec.Archive+".part")
+func EngineDir(root string, spec *catalog.EngineSpec) string {
+	return filepath.Join(EnginesDir(root), spec.DirName)
+}
+
+// Where an engine archive (the build or one of its parts) downloads to.
+func EnginePart(root, archive string) string {
+	return filepath.Join(EnginesDir(root), archive+".part")
 }
 
 func EngineBinary(root string, spec *catalog.EngineSpec, rel string) string {
-	return filepath.Join(EngineDir(root), filepath.FromSlash(rel))
+	return filepath.Join(EngineDir(root, spec), filepath.FromSlash(rel))
 }
 
 func ServerLog(root string) string {
@@ -114,8 +120,8 @@ func EngineInstalled(root string, spec *catalog.EngineSpec) bool {
 	if err != nil || info.IsDir() {
 		return false
 	}
-	data, err := os.ReadFile(filepath.Join(EngineDir(root), Receipt))
-	return err == nil && strings.TrimSpace(string(data)) == spec.SHA256
+	data, err := os.ReadFile(filepath.Join(EngineDir(root, spec), Receipt))
+	return err == nil && strings.TrimSpace(string(data)) == spec.Receipt()
 }
 
 func WriteEngineReceipt(dir, sha256 string) error {

@@ -1,9 +1,9 @@
 package engine
 
-// Package engine installs the pinned llama.cpp release: download to `.part`,
+// Package engine installs a pinned engine build — llama.cpp or
+// stable-diffusion.cpp, any backend: download every archive to `.part`,
 // verify, unpack into a staging dir, rename into place, write the receipt.
-// The unpackers are exported because the kev tarball and the
-// stable-diffusion.cpp release arrive the same way.
+// The unpackers are exported because the kev tarball arrives the same way.
 
 import (
 	"archive/tar"
@@ -22,31 +22,47 @@ import (
 )
 
 const (
-	maxEngineExpanded = 512 * 1024 * 1024
+	// A zip-bomb guard, not a budget: the CUDA runtime alone expands past
+	// 1.5 GB.
+	maxEngineExpanded = 4 << 30
 	maxEngineEntries  = 4_096
 )
 
+// progress sees the bytes fetched across every archive of the build.
 func Ensure(ctx context.Context, root string, spec *catalog.EngineSpec, progress func(int64)) error {
 	if paths.EngineInstalled(root, spec) {
 		return nil
 	}
-	archive := paths.EnginePart(root, spec)
-	if err := download.Fetch(ctx, spec.URL, spec.Bytes, archive, progress); err != nil {
+	archives := []catalog.EnginePart{{URL: spec.URL, Bytes: spec.Bytes, SHA256: spec.SHA256, Archive: spec.Archive, Kind: spec.Kind}}
+	archives = append(archives, spec.Parts...)
+	var done int64
+	for _, archive := range archives {
+		part := paths.EnginePart(root, archive.Archive)
+		offset := done
+		if err := download.Fetch(ctx, archive.URL, archive.Bytes, part, func(n int64) { progress(offset + n) }); err != nil {
+			return err
+		}
+		if err := download.Verify(part, archive.Bytes, archive.SHA256); err != nil {
+			return err
+		}
+		done += archive.Bytes
+	}
+	if err := install(root, spec, archives); err != nil {
 		return err
 	}
-	if err := download.Verify(archive, spec.Bytes, spec.SHA256); err != nil {
-		return err
+	for _, archive := range archives {
+		os.Remove(paths.EnginePart(root, archive.Archive))
 	}
-	return install(root, spec, archive)
+	return nil
 }
 
-func install(root string, spec *catalog.EngineSpec, archive string) error {
+func install(root string, spec *catalog.EngineSpec, archives []catalog.EnginePart) error {
 	if err := paths.ProtectDir(root); err != nil {
 		return err
 	}
 	staging, err := os.MkdirTemp(root, ".engine-")
 	if err != nil {
-		return fmt.Errorf("could not stage llama.cpp: %w", err)
+		return fmt.Errorf("could not stage %s: %w", spec.Name, err)
 	}
 	cleanup := true
 	defer func() {
@@ -54,33 +70,69 @@ func install(root string, spec *catalog.EngineSpec, archive string) error {
 			os.RemoveAll(staging)
 		}
 	}()
-	switch spec.Kind {
-	case catalog.TarGz:
-		err = UnpackTarGz(archive, staging)
-	case catalog.Zip:
-		err = UnpackZip(archive, staging)
+	if err := unpack(archives[0], root, staging); err != nil {
+		return err
 	}
+	binaryDir := filepath.Join(staging, filepath.Dir(filepath.FromSlash(spec.Binary)))
+	for _, part := range archives[1:] {
+		if err := unpackBeside(part, root, binaryDir); err != nil {
+			return err
+		}
+	}
+	if info, statErr := os.Stat(filepath.Join(staging, filepath.FromSlash(spec.Binary))); statErr != nil || info.IsDir() {
+		return fmt.Errorf("the pinned %s archive is missing %s", spec.Name, spec.Binary)
+	}
+	finalDir := paths.EngineDir(root, spec)
+	if err := os.RemoveAll(finalDir); err != nil {
+		return fmt.Errorf("could not replace managed %s: %w", spec.Name, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(finalDir), 0o700); err != nil {
+		return fmt.Errorf("could not install %s: %w", spec.Name, err)
+	}
+	if err := os.Rename(staging, finalDir); err != nil {
+		return fmt.Errorf("could not install %s: %w", spec.Name, err)
+	}
+	cleanup = false
+	return paths.WriteEngineReceipt(finalDir, spec.Receipt())
+}
+
+func unpack(archive catalog.EnginePart, root, into string) error {
+	part := paths.EnginePart(root, archive.Archive)
+	if archive.Kind == catalog.Zip {
+		return UnpackZip(part, into)
+	}
+	return UnpackTarGz(part, into)
+}
+
+// A part's files land next to the binary, which is where the loader looks
+// (the exe's own dir on Windows, LD_LIBRARY_PATH on Linux). An archive that
+// wraps everything in one top-level directory is unwrapped first.
+func unpackBeside(archive catalog.EnginePart, root, binaryDir string) error {
+	scratch, err := os.MkdirTemp(root, ".engine-part-")
 	if err != nil {
 		return err
 	}
-	if info, statErr := os.Stat(filepath.Join(staging, filepath.FromSlash(spec.Binary))); statErr != nil || info.IsDir() {
-		return fmt.Errorf("the pinned llama.cpp archive is missing %s", spec.Binary)
-	}
-	finalDir := paths.EngineDir(root)
-	if err := os.RemoveAll(finalDir); err != nil {
-		return fmt.Errorf("could not replace managed llama.cpp: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(finalDir), 0o700); err != nil {
-		return fmt.Errorf("could not install llama.cpp: %w", err)
-	}
-	if err := os.Rename(staging, finalDir); err != nil {
-		return fmt.Errorf("could not install llama.cpp: %w", err)
-	}
-	cleanup = false
-	if err := paths.WriteEngineReceipt(finalDir, spec.SHA256); err != nil {
+	defer os.RemoveAll(scratch)
+	if err := unpack(archive, root, scratch); err != nil {
 		return err
 	}
-	os.Remove(archive)
+	from := scratch
+	if entries, err := os.ReadDir(scratch); err == nil && len(entries) == 1 && entries[0].IsDir() {
+		from = filepath.Join(scratch, entries[0].Name())
+	}
+	entries, err := os.ReadDir(from)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		destination := filepath.Join(binaryDir, entry.Name())
+		if _, err := os.Lstat(destination); err == nil {
+			return fmt.Errorf("%s would overwrite %s from the engine itself", archive.Archive, entry.Name())
+		}
+		if err := os.Rename(filepath.Join(from, entry.Name()), destination); err != nil {
+			return fmt.Errorf("could not unpack %s: %w", archive.Archive, err)
+		}
+	}
 	return nil
 }
 

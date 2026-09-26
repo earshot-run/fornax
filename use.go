@@ -317,7 +317,7 @@ func runBench(ctx context.Context, spec *catalog.Spec, eng *catalog.EngineSpec) 
 	fmt.Fprintf(os.Stderr, "%s\n", ui.Dim(fmt.Sprintf("llama-bench on %s (pp512 / tg128)", spec.ID)))
 	cmd := exec.CommandContext(ctx, bench, "-m", paths.ModelFinal(root, spec))
 	cmd.Dir = filepath.Dir(bench)
-	cmd.Env = scrubbedEnv(root)
+	cmd.Env = engineEnv(root, bench)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -373,7 +373,10 @@ func runClean(all bool) error {
 		if info.IsDir() {
 			// Built runtimes are huge and never hold fornax's own .part files.
 			switch path {
-			case kevSrcDir(root), layaSrcDir(root), paths.EngineDir(root):
+			case kevSrcDir(root), layaSrcDir(root):
+				return filepath.SkipDir
+			}
+			if filepath.Dir(path) == paths.EnginesDir(root) {
 				return filepath.SkipDir
 			}
 			return nil

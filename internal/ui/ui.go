@@ -26,7 +26,14 @@ func detectANSI() bool {
 
 func IsTTY(f *os.File) bool {
 	info, err := f.Stat()
-	return err == nil && info.Mode()&os.ModeCharDevice != 0
+	if err != nil || info.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	// /dev/null is a character device too; `2>/dev/null` is not a terminal.
+	if null, err := os.Stat(os.DevNull); err == nil && os.SameFile(info, null) {
+		return false
+	}
+	return true
 }
 
 func style(s, code string) string {

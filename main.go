@@ -47,6 +47,7 @@ Use models:
   compare    Same prompt to several models, side by side
   imagine    Generate an image with a stable-diffusion.cpp model
   animate    Text or a still image to a short video clip
+  studio     Image studio in the browser: queue, live progress, gallery, references
   say        Speak text with a speech model; -voice clones a reference take
   talk       Take in → transcribe → answer → spoken reply out
   record     Mic to WAV — the takes hear and talk consume
@@ -96,6 +97,7 @@ func commands() []command {
 		{"compare", cmdCompare},
 		{"imagine", cmdImagine},
 		{"animate", cmdAnimate},
+		{"studio", cmdStudio},
 		{"say", cmdSay},
 		{"talk", cmdTalk},
 		{"record", cmdRecord},

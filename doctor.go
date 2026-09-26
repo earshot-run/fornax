@@ -23,14 +23,20 @@ func cmdDoctor(args []string) error {
 	row(" ", "fornax", version)
 	row(" ", "home", root)
 	row(" ", "machine", fmt.Sprintf("%s %s · %s RAM", runtime.GOOS, runtime.GOARCH, ui.HumanSize(memoryBytes())))
-	if eng := catalog.Engine(); eng != nil {
+	probe := probeGPU()
+	row(" ", "gpu", describeGPU(probe))
+	if eng, err := llamaEngine(); err == nil {
+		label := "llama.cpp " + catalog.EngineVersion + " · " + string(eng.Backend)
+		if why := skippedGPU(catalog.EngineVariants(), eng, probe); why != "" {
+			label += ui.Dim(" — not CUDA: " + why)
+		}
 		if paths.EngineInstalled(root, eng) {
-			row(ui.MarkOK(), "engine", "llama.cpp "+catalog.EngineVersion)
+			row(ui.MarkOK(), "engine", label)
 		} else {
-			row(ui.MarkIdle(), "engine", "llama.cpp "+catalog.EngineVersion+ui.Dim(" — first pull downloads it"))
+			row(ui.MarkIdle(), "engine", label+ui.Dim(fmt.Sprintf(" — first pull downloads it (%s)", ui.HumanSize(eng.TotalBytes()))))
 		}
 	} else {
-		row(ui.Red("✗"), "engine", "no pinned llama.cpp for this platform")
+		row(ui.Red("✗"), "engine", err.Error())
 	}
 	pyRuntime := func(name string, ready bool) {
 		switch {
