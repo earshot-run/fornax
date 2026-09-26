@@ -142,6 +142,13 @@ details[open] > .advanced { margin-top: 12px; display: flex; flex-direction: col
 body.offline .offline-banner { display: block; }
 
 .grid { columns: 260px; column-gap: 16px; }
+.library-head { display: flex; align-items: baseline; gap: 8px; margin: 4px 0 16px; }
+.library-head[hidden] { display: none; }
+.library-head h2 { font-size: 15px; font-weight: 600; margin: 0; letter-spacing: -.01em; }
+.library-head span { font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.library-head .clear-all { margin-left: auto; align-self: center; padding: 6px 10px; font-size: 12px; background: transparent; }
+.library-head .clear-all:hover { background: var(--surface-2); }
+.library-head .clear-all.armed { background: var(--danger); color: #fff; }
 .tile {
   break-inside: avoid; margin-bottom: 16px; border-radius: 12px; overflow: hidden; position: relative;
   background: var(--surface-2); display: block; width: 100%; border: 0; padding: 0; text-align: left;

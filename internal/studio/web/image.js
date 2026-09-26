@@ -267,6 +267,9 @@ function remaining(job) {
   return est ? est.total : null;
 }
 
+const imageHead = libraryHead("Images", "image", "image", "images");
+$("grid").before(imageHead.node);
+
 function renderGrid() {
   const active = state.jobs.filter((j) => j.state !== "canceled");
   const nodes = [...active.map(jobTile), ...state.images.map(imageTile)];
@@ -275,6 +278,7 @@ function renderGrid() {
   state.fresh.clear();
   const grid = $("grid");
   if (nodes.length !== grid.children.length || nodes.some((n, i) => grid.children[i] !== n)) grid.replaceChildren(...nodes);
+  imageHead.update(state.images.length);
   renderEmpty(nodes.length === 0);
 
   const running = state.jobs.find((j) => j.state === "running");

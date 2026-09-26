@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -272,5 +273,37 @@ func TestModelLabelUsesTheRepoNameForDerivedIDs(t *testing.T) {
 		if got := modelLabel(&c.spec); got != c.want {
 			t.Errorf("modelLabel(%s) = %q, want %q", c.spec.ID, got, c.want)
 		}
+	}
+}
+
+func TestStudioClearLibraryDeletesOneKind(t *testing.T) {
+	s := testStudio(t)
+	h := s.handler(7340)
+	withCookie := func(r *http.Request) { r.AddCookie(&http.Cookie{Name: studioCookie, Value: s.key}) }
+	add := func(id, kind, ext string) {
+		item := studioItem{ID: id, Kind: kind, Ext: ext, Created: time.Now()}
+		if err := s.saveSidecar(&studioJob{studioItem: item}); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(s.outputPath(&item), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add("00000000000000a1", "image", "png")
+	add("00000000000000a2", "image", "png")
+	add("00000000000000b1", "video", "webm")
+
+	rec := studioGet(t, h, "DELETE", "/api/library?kind=image", "127.0.0.1:7340", withCookie)
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != `{"deleted":2}` {
+		t.Fatalf("clear images: got %d %q", rec.Code, rec.Body.String())
+	}
+	if images, _ := s.items("image"); len(images) != 0 {
+		t.Errorf("%d images left after clearing", len(images))
+	}
+	if videos, _ := s.items("video"); len(videos) != 1 {
+		t.Errorf("clearing images touched videos: %d left, want 1", len(videos))
+	}
+	if _, err := os.Stat(filepath.Join(s.dir, "library", "00000000000000a1.png")); !os.IsNotExist(err) {
+		t.Errorf("image file survived: %v", err)
 	}
 }

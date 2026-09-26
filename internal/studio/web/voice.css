@@ -7,9 +7,6 @@
 }
 
 .voice-inner { max-width: 800px; margin: 0 auto; }
-.clip-head { display: flex; align-items: baseline; gap: 8px; margin: 4px 0 16px; }
-.clip-head h2 { font-size: 15px; font-weight: 600; margin: 0; letter-spacing: -.01em; }
-.clip-head span { font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
 .clip-list { display: flex; flex-direction: column; gap: 12px; }
 
 .clip-card {

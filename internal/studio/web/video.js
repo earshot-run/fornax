@@ -354,6 +354,7 @@
     for (const k of tiles.keys()) if (!live.has(k)) tiles.delete(k);
     state.fresh.clear();
     if (nodes.length !== ui.grid.children.length || nodes.some((n, i) => ui.grid.children[i] !== n)) ui.grid.replaceChildren(...nodes);
+    ui.head.update(state.videos.length);
     renderEmpty(nodes.length === 0);
     const running = state.jobs.find((j) => j.state === "running");
     const queued = state.jobs.filter((j) => j.state === "queued").length;
@@ -560,10 +561,11 @@
   Studio.register("video", {
     mount(section) {
       ui.grid = el("div", { className: "grid clips" });
+      ui.head = libraryHead("Videos", "video", "video", "videos");
       ui.empty = el("div");
       section.append(el("div", { className: "app" },
         buildComposer(),
-        el("main", { className: "main" }, el("div", { className: "main-inner" }, ui.grid, ui.empty))));
+        el("main", { className: "main" }, el("div", { className: "main-inner" }, ui.head.node, ui.grid, ui.empty))));
       buildViewer();
       wire();
       renderSegments();

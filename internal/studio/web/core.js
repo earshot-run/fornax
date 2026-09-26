@@ -54,6 +54,38 @@ async function uploadRef(blob) {
   return (await res.json()).name;
 }
 
+// A mode's library heading: title, count, and a two-click "Delete all" for
+// one kind. The list reloads itself from the library-changed event.
+function libraryHead(title, kind, one, many) {
+  const count = el("span");
+  const clear = el("button", { type: "button", className: "action danger clear-all" }, icon("trash"), "Delete all");
+  let total = 0, timer;
+  const disarm = () => { clearTimeout(timer); clear.classList.remove("armed"); clear.lastChild.textContent = "Delete all"; };
+  clear.onclick = async () => {
+    if (!clear.classList.contains("armed")) {
+      clear.classList.add("armed");
+      clear.lastChild.textContent = `Delete ${total} for good`;
+      timer = setTimeout(disarm, 4000);
+      return;
+    }
+    disarm();
+    const res = await fetch("/api/library?kind=" + kind, { method: "DELETE" });
+    if (!res.ok) { toast((await res.text()).trim()); return; }
+    const { deleted } = await res.json();
+    toast(`Deleted ${deleted} ${deleted === 1 ? one : many}`);
+  };
+  const node = el("div", { className: "library-head" }, el("h2", { textContent: title }), count, clear);
+  return {
+    node,
+    update(n) {
+      if (n !== total) disarm();
+      total = n;
+      count.textContent = `${n} ${n === 1 ? one : many}`;
+      node.hidden = n === 0;
+    },
+  };
+}
+
 // The empty state of a mode with no models: one button to the Models page,
 // already showing that kind.
 function getModel(kind, title, text, className = "empty") {

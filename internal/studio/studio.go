@@ -265,6 +265,7 @@ func (s *studio) handler(port int) http.Handler {
 	mux.HandleFunc("GET /api/about", s.handleAbout)
 	mux.HandleFunc("GET /api/models", s.handleModels)
 	mux.HandleFunc("GET /api/library", s.handleLibrary)
+	mux.HandleFunc("DELETE /api/library", s.handleClearLibrary)
 	mux.HandleFunc("DELETE /api/library/{id}", s.handleDeleteItem)
 	mux.HandleFunc("POST /api/jobs", s.handleCreateJob)
 	mux.HandleFunc("DELETE /api/jobs/{id}", s.handleCancelJob)
@@ -453,6 +454,26 @@ func (s *studio) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	s.removeItem(id)
+	s.libraryChanged()
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// Deletes every finished item of ?kind= (every kind when it is absent).
+func (s *studio) handleClearLibrary(w http.ResponseWriter, r *http.Request) {
+	items, err := s.items(r.URL.Query().Get("kind"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	for _, item := range items {
+		s.removeItem(item.ID)
+	}
+	s.libraryChanged()
+	writeJSON(w, http.StatusOK, map[string]int{"deleted": len(items)})
+}
+
+func (s *studio) removeItem(id string) {
 	sidecar := filepath.Join(s.dir, "library", id+".json")
 	if raw, err := os.ReadFile(sidecar); err == nil {
 		var item studioItem
@@ -461,11 +482,13 @@ func (s *studio) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	os.Remove(sidecar)
+}
+
+func (s *studio) libraryChanged() {
 	s.mu.Lock()
 	s.library++
 	s.notifyLocked()
 	s.mu.Unlock()
-	w.WriteHeader(http.StatusNoContent)
 }
 
 type studioRequest struct {

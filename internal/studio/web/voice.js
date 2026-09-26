@@ -499,8 +499,7 @@
     for (const k of rows.keys()) if (!live.has(k)) rows.delete(k);
     state.fresh.clear();
     if (nodes.length !== ui.list.children.length || nodes.some((n, i) => ui.list.children[i] !== n)) ui.list.replaceChildren(...nodes);
-    ui.head.hidden = nodes.length === 0;
-    ui.headCount.textContent = state.clips.length === 1 ? "1 clip" : `${state.clips.length} clips`;
+    ui.head.update(state.clips.length);
     renderEmpty(nodes.length === 0);
     const queued = state.jobs.filter((j) => j.state === "queued").length;
     ui.queueNote.textContent = queued ? `${queued} queued` : "";
@@ -601,12 +600,11 @@
   Studio.register("voice", {
     mount(section) {
       ui.list = el("div", { className: "clip-list" });
-      ui.headCount = el("span");
-      ui.head = el("div", { className: "clip-head" }, el("h2", { textContent: "Clips" }), ui.headCount);
+      ui.head = libraryHead("Clips", "speech", "clip", "clips");
       ui.empty = el("div");
       section.append(el("div", { className: "app voice-app" },
         buildComposer(),
-        el("main", { className: "main" }, el("div", { className: "main-inner voice-inner" }, ui.head, ui.list, ui.empty))));
+        el("main", { className: "main" }, el("div", { className: "main-inner voice-inner" }, ui.head.node, ui.list, ui.empty))));
       wire();
       renderVoices();
       renderRecorder();
