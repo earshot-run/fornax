@@ -328,6 +328,8 @@ func fetchBody(ctx context.Context, url string) (io.ReadCloser, error) {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", "fornax")
+	// GitHub can serve the previous rolling asset redirect after publication.
+	req.Header.Set("Cache-Control", "no-cache")
 	client := &http.Client{Timeout: 10 * time.Minute}
 	resp, err := client.Do(req)
 	if err != nil {

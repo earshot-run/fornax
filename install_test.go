@@ -40,6 +40,9 @@ func TestInstallReleaseChecksum(t *testing.T) {
 					mu.Unlock()
 					switch r.URL.Path {
 					case "/main-build/version.txt":
+						if !authenticated && r.Header.Get("Cache-Control") != "no-cache" {
+							t.Error("channel lookup can reuse a stale release redirect")
+						}
 						if scenario == "invalid-pointer" {
 							fmt.Fprintln(w, "v1.0.0")
 						} else {

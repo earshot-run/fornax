@@ -126,6 +126,9 @@ func TestUpgradeChannel(t *testing.T) {
 				mu.Unlock()
 				switch r.URL.Path {
 				case "/main-build/version.txt":
+					if r.Header.Get("Cache-Control") != "no-cache" {
+						t.Error("channel lookup can reuse a stale release redirect")
+					}
 					fmt.Fprintln(w, tc.available)
 				case "/releases/latest", "/releases/tags/" + tc.available:
 					fmt.Fprintf(w, `{"tag_name":%q}`, tc.available)
