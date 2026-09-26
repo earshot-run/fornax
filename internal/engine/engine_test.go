@@ -1,4 +1,4 @@
-package main
+package engine
 
 import (
 	"archive/tar"
@@ -41,16 +41,22 @@ func TestUnpackTarGzWritesFilesAndLinks(t *testing.T) {
 	os.WriteFile(archive, buf.Bytes(), 0o600)
 	into := filepath.Join(root, "staging")
 	os.Mkdir(into, 0o700)
-	if err := unpackTarGz(archive, into); err != nil {
-		t.Fatalf("unpackTarGz: %v", err)
+	if err := UnpackTarGz(archive, into); err != nil {
+		t.Fatalf("UnpackTarGz: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(into, "llama-b11060", "llama-server"))
 	if err != nil || string(got) != "bin!" {
 		t.Fatalf("binary = %q, %v", got, err)
 	}
+	// The umask clears the group and world bits under a private ~/.fornax,
+	// so only the owner's execute bit is load-bearing here.
 	info, err := os.Stat(filepath.Join(into, "llama-b11060", "llama-server"))
-	if err != nil || info.Mode().Perm() != 0o755 {
+	if err != nil || info.Mode().Perm()&0o100 == 0 {
 		t.Fatalf("binary mode = %v, %v", info.Mode(), err)
+	}
+	plain, err := os.Stat(filepath.Join(into, "llama-b11060", "LICENSE"))
+	if err != nil || plain.Mode().Perm()&0o111 != 0 {
+		t.Fatalf("LICENSE mode = %v, %v", plain.Mode(), err)
 	}
 	link, err := os.Readlink(filepath.Join(into, "llama-b11060", "link"))
 	if err != nil || link != "llama-server" {
@@ -72,8 +78,8 @@ func TestUnpackZipWritesFlatRelease(t *testing.T) {
 	os.WriteFile(archive, buf.Bytes(), 0o600)
 	into := filepath.Join(root, "staging")
 	os.Mkdir(into, 0o700)
-	if err := unpackZip(archive, into); err != nil {
-		t.Fatalf("unpackZip: %v", err)
+	if err := UnpackZip(archive, into); err != nil {
+		t.Fatalf("UnpackZip: %v", err)
 	}
 	for _, name := range []string{"llama-server.exe", "ggml.dll"} {
 		if _, err := os.Stat(filepath.Join(into, name)); err != nil {
@@ -96,7 +102,7 @@ func TestUnpackTarGzRefusesTraversal(t *testing.T) {
 	os.WriteFile(archive, buf.Bytes(), 0o600)
 	into := filepath.Join(root, "staging")
 	os.Mkdir(into, 0o700)
-	if err := unpackTarGz(archive, into); err == nil {
-		t.Fatal("unpackTarGz accepted a traversal path")
+	if err := UnpackTarGz(archive, into); err == nil {
+		t.Fatal("UnpackTarGz accepted a traversal path")
 	}
 }

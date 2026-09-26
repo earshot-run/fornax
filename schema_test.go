@@ -15,11 +15,11 @@ func TestSchemaLive(t *testing.T) {
 	if os.Getenv("FORNAX_LIVE") == "" {
 		t.Skip("set FORNAX_LIVE=1 to run against real models")
 	}
-	spec, eng, err := resolve("qwen3-4b")
+	ctx := context.Background()
+	spec, eng, err := resolve(ctx, "hf:Qwen/Qwen3-4B-GGUF")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := context.Background()
 
 	t.Run("json_object", func(t *testing.T) {
 		out, err := captureStdout(t, func() error {

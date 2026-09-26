@@ -1,6 +1,6 @@
-package main
+package download
 
-// Resumable, strictly pinned downloads. A `.part` file resumes via HTTP
+// Package download makes resumable, strictly pinned downloads. A `.part` file resumes via HTTP
 // Range; nothing is "done" until byte count and SHA-256 both match the pin.
 
 import (
@@ -15,13 +15,15 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/earshot-run/fornax/internal/paths"
 )
 
-func fetch(ctx context.Context, url string, expected int64, path string, progress func(int64)) error {
-	if err := protectDir(filepath.Dir(path)); err != nil {
+func Fetch(ctx context.Context, url string, expected int64, path string, progress func(int64)) error {
+	if err := paths.ProtectDir(filepath.Dir(path)); err != nil {
 		return err
 	}
-	downloaded := partialBytes(path, expected)
+	downloaded := paths.PartialBytes(path, expected)
 	if downloaded == expected {
 		progress(downloaded)
 		return nil
@@ -137,7 +139,7 @@ func parseContentRange(value string) (contentRange, error) {
 	return cr, nil
 }
 
-func verify(path string, expectedBytes int64, expectedSHA string) error {
+func Verify(path string, expectedBytes int64, expectedSHA string) error {
 	if len(expectedSHA) != 64 {
 		return fmt.Errorf("the pinned digest is invalid")
 	}

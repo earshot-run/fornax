@@ -12,6 +12,10 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/earshot-run/fornax/internal/catalog"
+	"github.com/earshot-run/fornax/internal/openai"
+	"github.com/earshot-run/fornax/internal/ui"
 )
 
 type compareResult struct {
@@ -29,8 +33,8 @@ func cmdCompare(ctx context.Context, args []string) error {
 	if prompt == "" {
 		return fmt.Errorf("usage: fornax compare <model,model,…> <prompt…>")
 	}
-	var specs []*modelSpec
-	var engs []*engineSpec
+	var specs []*catalog.Spec
+	var engs []*catalog.EngineSpec
 	seen := map[string]bool{}
 	for _, raw := range strings.Split(args[0], ",") {
 		id := strings.TrimSpace(raw)
@@ -38,21 +42,12 @@ func cmdCompare(ctx context.Context, args []string) error {
 			continue
 		}
 		seen[id] = true
-		spec, eng, err := resolve(id)
+		spec, eng, err := resolve(ctx, id)
 		if err != nil {
 			return err
 		}
-		if spec.rt == runtimeKev {
-			return fmt.Errorf("%s judges, it doesn't chat — drop it or use `fornax judge %s`", spec.id, spec.id)
-		}
-		if spec.rt == runtimeSD {
-			return fmt.Errorf("%s draws, it doesn't chat — drop it or use `fornax draw %s`", spec.id, spec.id)
-		}
-		if spec.kind == modalEmbed {
-			return fmt.Errorf("%s embeds, it doesn't chat — drop it or use `fornax embed %s`", spec.id, spec.id)
-		}
-		if spec.kind == modalSpeech {
-			return fmt.Errorf("%s speaks, it doesn't chat — drop it or use `fornax say %s`", spec.id, spec.id)
+		if err := requireChat(spec); err != nil {
+			return err
 		}
 		specs = append(specs, spec)
 		engs = append(engs, eng)
@@ -64,11 +59,11 @@ func cmdCompare(ctx context.Context, args []string) error {
 	var results []compareResult
 	failures := 0
 	for i, spec := range specs {
-		res := compareResult{id: spec.id}
+		res := compareResult{id: spec.ID}
 		err := withServer(ctx, spec, engs[i], func(url, key string) error {
 			started := time.Now()
-			reply, err := chatOnce(ctx, url, key, spec.id,
-				[]message{textMessage("user", prompt)}, -1)
+			reply, err := openai.Once(ctx, url, key, spec.ID,
+				[]openai.Message{openai.TextMessage("user", prompt)}, -1)
 			res.elapsed = time.Since(started)
 			if err != nil {
 				return err
@@ -84,11 +79,11 @@ func cmdCompare(ctx context.Context, args []string) error {
 		})
 		if err != nil {
 			failures++
-			fmt.Fprintf(os.Stderr, "%s\n", dim(fmt.Sprintf("─── %s ───  failed: %v", spec.id, err)))
+			fmt.Fprintf(os.Stderr, "%s\n", ui.Dim(fmt.Sprintf("─── %s ───  failed: %v", spec.ID, err)))
 			continue
 		}
 		results = append(results, res)
-		fmt.Println(dim(compareHeader(res)))
+		fmt.Println(ui.Dim(compareHeader(res)))
 		fmt.Println(res.text)
 		fmt.Println()
 	}
@@ -101,7 +96,7 @@ func cmdCompare(ctx context.Context, args []string) error {
 	for i, r := range results {
 		ranked[i] = fmt.Sprintf("%s (%s)", r.id, compareStats(r))
 	}
-	fmt.Println(dim("fastest first: " + strings.Join(ranked, " · ")))
+	fmt.Println(ui.Dim("fastest first: " + strings.Join(ranked, " · ")))
 	return nil
 }
 

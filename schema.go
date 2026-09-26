@@ -11,11 +11,14 @@ import (
 	"io"
 	"os"
 	"strings"
+
+	"github.com/earshot-run/fornax/internal/catalog"
+	"github.com/earshot-run/fornax/internal/openai"
 )
 
 // jsonFlag non-empty means "any JSON object"; schemaPath points at a JSON
 // Schema file ("-" reads it from stdin). They are alternatives.
-func runAskStructured(ctx context.Context, spec *modelSpec, eng *engineSpec, prompt, jsonFlag, schemaPath string) error {
+func runAskStructured(ctx context.Context, spec *catalog.Spec, eng *catalog.EngineSpec, prompt, jsonFlag, schemaPath string) error {
 	extra, err := structuredExtra(jsonFlag, schemaPath)
 	if err != nil {
 		return err
@@ -66,11 +69,11 @@ func structuredExtra(jsonFlag, schemaPath string) (map[string]any, error) {
 	}, nil
 }
 
-func askStructured(ctx context.Context, spec *modelSpec, eng *engineSpec, prompt string, extra map[string]any) (string, error) {
+func askStructured(ctx context.Context, spec *catalog.Spec, eng *catalog.EngineSpec, prompt string, extra map[string]any) (string, error) {
 	var text string
 	err := withServer(ctx, spec, eng, func(url, key string) error {
-		reply, err := chatOnceFull(ctx, url, key, spec.id,
-			[]message{textMessage("user", prompt)}, -1, extra)
+		reply, err := openai.OnceFull(ctx, url, key, spec.ID,
+			[]openai.Message{openai.TextMessage("user", prompt)}, -1, extra)
 		if err != nil {
 			return err
 		}

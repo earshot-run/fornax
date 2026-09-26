@@ -13,6 +13,11 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/earshot-run/fornax/internal/catalog"
+	"github.com/earshot-run/fornax/internal/openai"
+	"github.com/earshot-run/fornax/internal/paths"
+	"github.com/earshot-run/fornax/internal/ui"
 )
 
 // `fornax talk <audio> [question…] [-llm m] [-stt m] [-tts m] [-voice ref.wav] [-o out.wav|-]`
@@ -24,22 +29,14 @@ func cmdTalk(ctx context.Context, args []string) error {
 	voice := set.String("voice", "", "reference audio to clone the reply voice from (wav/mp3/flac)")
 	out := set.String("o", "", "output WAV path, or - for stdout (default: talk-<timestamp>.wav)")
 	usageLine := `usage: fornax talk <audio> [question…] [-llm m] [-stt m] [-tts m] [-voice ref.wav] [-o out.wav]`
-	set.Usage = func() { fmt.Fprintln(os.Stderr, usageLine) }
-	// The take leads; every other positional is question text. Same
-	// pull-then-parse shape as say/draw so flags can lead instead.
-	var audioPath string
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		audioPath, args = args[0], args[1:]
-	}
-	set.Parse(args)
-	rest := set.Args()
-	if audioPath == "" && len(rest) > 0 {
-		audioPath, rest = rest[0], rest[1:]
-	}
-	if audioPath == "" {
+	set.Usage = ui.UsageFunc(set, usageLine)
+	// The take leads; every other positional is question text.
+	got := parseFlexible(set, args, 1)
+	if len(got) == 0 {
 		return fmt.Errorf("%s", usageLine)
 	}
-	question := strings.Join(rest, " ")
+	audioPath := got[0]
+	question := strings.Join(got[1:], " ")
 	if info, err := os.Stat(audioPath); err != nil || info.IsDir() {
 		return fmt.Errorf("%s is not a readable audio file", audioPath)
 	}
@@ -48,40 +45,40 @@ func cmdTalk(ctx context.Context, args []string) error {
 			return fmt.Errorf("-voice %s is not a readable audio file", *voice)
 		}
 	}
-	part, err := audioPart(audioPath)
+	part, err := openai.AudioPart(audioPath)
 	if err != nil {
 		return err
 	}
-	root := home()
-	pick := func(flagID, flagName, label string, kinds ...modality) (*modelSpec, *engineSpec, error) {
+	root := paths.Home()
+	pick := func(flagID, flagName, label string, kinds ...catalog.Modality) (*catalog.Spec, *catalog.EngineSpec, error) {
 		spec, err := talkSpec(root, flagID, flagName, label, kinds...)
 		if err != nil {
 			return nil, nil, err
 		}
-		return resolve(spec.id)
+		return resolve(ctx, spec.ID)
 	}
-	sttSpec, sttEng, err := pick(*sttID, "stt", "audio", modalAudio)
+	sttSpec, sttEng, err := pick(*sttID, "stt", "audio", catalog.Audio)
 	if err != nil {
 		return err
 	}
 	// Only text and vision models chat — kev speaks /v1/systemone and the
 	// embed/rerank/image/speech kinds don't take prompts at all.
-	llmSpec, llmEng, err := pick(*llmID, "llm", "text or vision", modalText, modalVision)
+	llmSpec, llmEng, err := pick(*llmID, "llm", "text or vision", catalog.Text, catalog.Vision)
 	if err != nil {
 		return err
 	}
-	ttsSpec, ttsEng, err := pick(*ttsID, "tts", "speech", modalSpeech)
+	ttsSpec, ttsEng, err := pick(*ttsID, "tts", "speech", catalog.Speech)
 	if err != nil {
 		return err
 	}
 	if ttsEng == nil {
-		return fmt.Errorf("%s does not speak through the pinned llama.cpp engine", ttsSpec.id)
+		return fmt.Errorf("%s does not speak through the pinned llama.cpp engine", ttsSpec.ID)
 	}
 
 	var transcript string
 	if err := withServer(ctx, sttSpec, sttEng, func(url, key string) error {
 		started := time.Now()
-		reply, err := chatOnce(ctx, url, key, sttSpec.id, []message{{
+		reply, err := openai.Once(ctx, url, key, sttSpec.ID, []openai.Message{{
 			Role: "user",
 			Content: []any{
 				map[string]any{"type": "text", "text": "Transcribe what is said."},
@@ -93,9 +90,9 @@ func cmdTalk(ctx context.Context, args []string) error {
 		}
 		transcript = strings.TrimSpace(reply.Text)
 		if transcript == "" {
-			return fmt.Errorf("%s returned an empty transcript", sttSpec.id)
+			return fmt.Errorf("%s returned an empty transcript", sttSpec.ID)
 		}
-		fmt.Fprintf(os.Stderr, "%s\n", dim(fmt.Sprintf("heard %q (%.1fs)", talkPreview(transcript, 60), time.Since(started).Seconds())))
+		fmt.Fprintf(os.Stderr, "%s\n", ui.Dim(fmt.Sprintf("heard %q (%.1fs)", talkPreview(transcript, 60), time.Since(started).Seconds())))
 		return nil
 	}); err != nil {
 		return err
@@ -108,16 +105,16 @@ func cmdTalk(ctx context.Context, args []string) error {
 	var answer string
 	if err := withServer(ctx, llmSpec, llmEng, func(url, key string) error {
 		started := time.Now()
-		reply, err := chatOnce(ctx, url, key, llmSpec.id,
-			[]message{textMessage("user", prompt)}, -1)
+		reply, err := openai.Once(ctx, url, key, llmSpec.ID,
+			[]openai.Message{openai.TextMessage("user", prompt)}, -1)
 		if err != nil {
 			return err
 		}
 		answer = strings.TrimSpace(reply.Text)
 		if answer == "" {
-			return fmt.Errorf("%s returned an empty reply", llmSpec.id)
+			return fmt.Errorf("%s returned an empty reply", llmSpec.ID)
 		}
-		fmt.Fprintf(os.Stderr, "%s\n", dim(fmt.Sprintf("reply %q (%.1fs)", talkPreview(answer, 60), time.Since(started).Seconds())))
+		fmt.Fprintf(os.Stderr, "%s\n", ui.Dim(fmt.Sprintf("reply %q (%.1fs)", talkPreview(answer, 60), time.Since(started).Seconds())))
 		return nil
 	}); err != nil {
 		return err
@@ -130,21 +127,21 @@ func cmdTalk(ctx context.Context, args []string) error {
 	if err := pull(ctx, ttsSpec, ttsEng); err != nil {
 		return err
 	}
-	verifying := spin("verifying " + ttsSpec.id)
+	verifying := ui.Spin("verifying " + ttsSpec.ID)
 	if err := rehash(root, ttsSpec); err != nil {
-		verifying.stop("")
+		verifying.Stop("")
 		return err
 	}
-	verifying.stop("")
+	verifying.Stop("")
 	return runSay(ctx, root, ttsEng, ttsSpec, answer, outPath, *voice, "en", 0)
 }
 
 // The spec for one pipeline leg: the -flag's model validated for the leg's
 // kind, or the first installed spec that fits when the flag is empty.
-func talkSpec(root, flagID, flagName, label string, kinds ...modality) (*modelSpec, error) {
-	fits := func(spec *modelSpec) bool {
+func talkSpec(root, flagID, flagName, label string, kinds ...catalog.Modality) (*catalog.Spec, error) {
+	fits := func(spec *catalog.Spec) bool {
 		for _, kind := range kinds {
-			if spec.kind == kind {
+			if spec.Kind == kind {
 				return true
 			}
 		}
@@ -156,11 +153,11 @@ func talkSpec(root, flagID, flagName, label string, kinds ...modality) (*modelSp
 			return nil, unknownModel(flagID)
 		}
 		if !fits(spec) {
-			return nil, fmt.Errorf("-%s %s is %s, not %s — `fornax list` shows kinds", flagName, spec.id, spec.kind, label)
+			return nil, fmt.Errorf("-%s %s is %s, not %s — `fornax list` shows kinds", flagName, spec.ID, spec.Kind, label)
 		}
 		return spec, nil
 	}
-	var first *modelSpec
+	var first *catalog.Spec
 	for _, spec := range allSpecs(root) {
 		if !fits(spec) {
 			continue
@@ -173,15 +170,15 @@ func talkSpec(root, flagID, flagName, label string, kinds ...modality) (*modelSp
 		}
 	}
 	if first != nil {
-		return nil, fmt.Errorf("no installed %s model — `fornax pull %s` first (or -%s <model>)", label, first.id, flagName)
+		return nil, fmt.Errorf("no installed %s model — `fornax pull %s` first (or -%s <model>)", label, first.ID, flagName)
 	}
-	return nil, fmt.Errorf("the catalog has no %s model", label)
+	return nil, fmt.Errorf("no %s model is known — `fornax search` finds one to pull", label)
 }
 
 // For default picks apple-fm counts as installed — it ships in the OS and
 // its bridge compiles on pull — but only where it can actually run.
-func talkInstalled(root string, spec *modelSpec) bool {
-	if spec.rt == runtimeApple {
+func talkInstalled(root string, spec *catalog.Spec) bool {
+	if spec.Runtime == catalog.Apple {
 		return appleSupported() == nil
 	}
 	return modelInstalled(root, spec)

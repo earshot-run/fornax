@@ -18,30 +18,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
-)
 
-func init() {
-	models = append(models, modelSpec{
-		id:      "qwen3-tts-1.7b",
-		name:    "Qwen3-TTS 1.7B",
-		summary: "Speaks text in 10 languages; clones a voice from a reference take.",
-		kind:    modalSpeech,
-		repo:    "ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF",
-		model: filePin{
-			file:     "Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf",
-			revision: "ca27d74bc954b73dadab5b71ca265d87fc861a7c",
-			bytes:    1_847_874_400,
-			sha256:   "ac7931aeb2e7aad1a6ed6602d353a5679c9d096b18ce8204ac730a8408d572e1",
-		},
-		mmproj: &filePin{
-			file:     "mmproj-Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf",
-			revision: "ca27d74bc954b73dadab5b71ca265d87fc861a7c",
-			bytes:    446_422_912,
-			sha256:   "6fd65188839bcd6ecc91b277ad471e22a0edfada4699a0fe82f1165c18cfcce2",
-		},
-		port: 7347,
-	})
-}
+	"github.com/earshot-run/fornax/internal/catalog"
+	"github.com/earshot-run/fornax/internal/paths"
+	"github.com/earshot-run/fornax/internal/ui"
+)
 
 // `fornax say <model> "text" [-o out.wav|-] [-voice ref.wav] [-lang en] [-n frames]`
 func cmdSay(ctx context.Context, args []string) error {
@@ -51,42 +32,34 @@ func cmdSay(ctx context.Context, args []string) error {
 	lang := set.String("lang", "en", "en zh de it pt es ja ko fr ru")
 	frames := set.Int("n", 0, "cap output length in audio frames (default: model decides)")
 	usageLine := `usage: fornax say <model> "text" [-o out.wav] [-voice ref.wav] [-lang en] [-n frames]`
-	set.Usage = func() { fmt.Fprintln(os.Stderr, usageLine) }
+	set.Usage = ui.UsageFunc(set, usageLine)
+	got := parseFlexible(set, args, 2)
+	if len(got) > 2 {
+		return fmt.Errorf("%s", usageLine)
+	}
 	var id, prompt string
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		id, args = args[0], args[1:]
+	if len(got) > 0 {
+		id = got[0]
 	}
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		prompt, args = args[0], args[1:]
+	if len(got) > 1 {
+		prompt = got[1]
 	}
-	set.Parse(args)
-	rest := set.Args()
-	if id == "" && len(rest) > 0 {
-		id, rest = rest[0], rest[1:]
-	}
-	if prompt == "" && len(rest) > 0 {
-		prompt, rest = rest[0], rest[1:]
-	}
-	if prompt == "" && !isTTY(os.Stdin) {
+	if prompt == "" && !ui.IsTTY(os.Stdin) {
 		data, err := io.ReadAll(os.Stdin)
 		if err != nil {
 			return err
 		}
 		prompt = strings.TrimSpace(string(data))
 	}
-	if id == "" || prompt == "" || len(rest) > 0 {
+	if id == "" || prompt == "" {
 		return fmt.Errorf("%s", usageLine)
 	}
-	spec := model(id)
-	if spec == nil {
-		return unknownModel(id)
+	spec, eng, err := resolve(ctx, id)
+	if err != nil {
+		return err
 	}
-	if spec.kind != modalSpeech {
-		return fmt.Errorf("%s does not speak — pick a speech model (`list`)", spec.id)
-	}
-	eng := engine()
-	if eng == nil {
-		return fmt.Errorf("fornax does not have a pinned llama.cpp for %s/%s yet", runtime.GOOS, runtime.GOARCH)
+	if spec.Kind != catalog.Speech {
+		return fmt.Errorf("%s does not speak — pick a speech model (`list`)", spec.ID)
 	}
 	if *voice != "" {
 		if info, err := os.Stat(*voice); err != nil || info.IsDir() {
@@ -95,25 +68,25 @@ func cmdSay(ctx context.Context, args []string) error {
 	}
 	outPath := *out
 	if outPath == "" {
-		outPath = fmt.Sprintf("%s-%d.wav", spec.id, time.Now().Unix())
+		outPath = fmt.Sprintf("%s-%d.wav", spec.ID, time.Now().Unix())
 	}
-	root := home()
+	root := paths.Home()
 	if err := pull(ctx, spec, eng); err != nil {
 		return err
 	}
-	verifying := spin("verifying " + spec.id)
+	verifying := ui.Spin("verifying " + spec.ID)
 	if err := rehash(root, spec); err != nil {
-		verifying.stop("")
+		verifying.Stop("")
 		return err
 	}
-	verifying.stop("")
+	verifying.Stop("")
 	return runSay(ctx, root, eng, spec, prompt, outPath, *voice, *lang, *frames)
 }
 
-func runSay(ctx context.Context, root string, eng *engineSpec, spec *modelSpec, prompt, outPath, voice, lang string, frames int) error {
-	binary := engineBinary(root, eng, eng.tts)
+func runSay(ctx context.Context, root string, eng *catalog.EngineSpec, spec *catalog.Spec, prompt, outPath, voice, lang string, frames int) error {
+	binary := paths.EngineBinary(root, eng, eng.TTS)
 	if info, err := os.Stat(binary); err != nil || info.IsDir() {
-		return fmt.Errorf("the pinned llama.cpp is missing %s — reinstall the engine", eng.tts)
+		return fmt.Errorf("the pinned llama.cpp is missing %s — reinstall the engine", eng.TTS)
 	}
 	toStdout := outPath == "-"
 	work := outPath
@@ -126,38 +99,10 @@ func runSay(ctx context.Context, root string, eng *engineSpec, spec *modelSpec, 
 		tmp.Close()
 		defer os.Remove(work)
 	}
-	ttsArgs := []string{
-		"-m", modelFinal(root, spec),
-		"-mm", filePath(root, spec, spec.mmproj),
-		"-p", prompt,
-		"--output", work,
-		"--tts-lang", lang,
-	}
-	if voice != "" {
-		ttsArgs = append(ttsArgs, "--tts-speaker-file", voice)
-	}
-	if frames > 0 {
-		ttsArgs = append(ttsArgs, "-n", strconv.Itoa(frames))
-	}
-	cmd := exec.CommandContext(ctx, binary, ttsArgs...)
-	cmd.Dir = filepath.Dir(binary)
-	cmd.Env = []string{
-		"HOME=" + filepath.Join(root, "server-home"),
-		"PATH=/usr/bin:/bin:/usr/sbin:/sbin",
-	}
-	if tmp := os.Getenv("TMPDIR"); tmp != "" {
-		cmd.Env = append(cmd.Env, "TMPDIR="+tmp)
-	}
-	cmd.Stdin = nil
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	fmt.Fprintf(os.Stderr, "%s\n", dim("synthesizing with "+spec.id))
+	fmt.Fprintf(os.Stderr, "%s\n", ui.Dim("synthesizing with "+spec.ID))
 	started := time.Now()
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return fmt.Errorf("llama-tts exited: %w", err)
+	if err := runTTS(ctx, root, eng, spec, prompt, work, voice, lang, frames); err != nil {
+		return err
 	}
 	elapsed := time.Since(started)
 	info, err := os.Stat(work)
@@ -175,23 +120,23 @@ func runSay(ctx context.Context, root string, eng *engineSpec, spec *modelSpec, 
 		}
 		return nil
 	}
-	fmt.Printf("%s wrote %s (%.1fs)\n", green("✓"), outPath, elapsed.Seconds())
+	fmt.Printf("%s wrote %s (%.1fs)\n", ui.Green("✓"), outPath, elapsed.Seconds())
 	return nil
 }
 
 // A speech model's `test` is a one-line synth — proves the codec path end
 // to end without needing a speaker file.
-func runSayTest(ctx context.Context, spec *modelSpec, eng *engineSpec) error {
-	root := home()
+func runSayTest(ctx context.Context, spec *catalog.Spec, eng *catalog.EngineSpec) error {
+	root := paths.Home()
 	if err := pull(ctx, spec, eng); err != nil {
 		return err
 	}
-	verifying := spin("verifying " + spec.id)
+	verifying := ui.Spin("verifying " + spec.ID)
 	if err := rehash(root, spec); err != nil {
-		verifying.stop("")
+		verifying.Stop("")
 		return err
 	}
-	verifying.stop("")
+	verifying.Stop("")
 	tmp, err := os.CreateTemp("", "fornax-say-test-*.wav")
 	if err != nil {
 		return err
@@ -208,23 +153,34 @@ func runSayTest(ctx context.Context, spec *modelSpec, eng *engineSpec) error {
 		return fmt.Errorf("llama-tts wrote no audio")
 	}
 	fmt.Printf("%s %s — synthesized %s of audio in %.1fs\n",
-		green("✓"), bold(spec.id), dim(humanSize(info.Size())), time.Since(started).Seconds())
+		ui.Green("✓"), ui.Bold(spec.ID), ui.Dim(ui.HumanSize(info.Size())), time.Since(started).Seconds())
 	return nil
 }
 
-func runSayQuiet(ctx context.Context, root string, eng *engineSpec, spec *modelSpec, prompt, out string) error {
-	binary := engineBinary(root, eng, eng.tts)
-	cmd := exec.CommandContext(ctx, binary,
-		"-m", modelFinal(root, spec),
-		"-mm", filePath(root, spec, spec.mmproj),
+func runSayQuiet(ctx context.Context, root string, eng *catalog.EngineSpec, spec *catalog.Spec, prompt, out string) error {
+	return runTTS(ctx, root, eng, spec, prompt, out, "", "en", 0)
+}
+
+// One llama-tts run: every caller synthesizes to a file and narrates on
+// stderr, so stdout stays whatever the command itself writes.
+func runTTS(ctx context.Context, root string, eng *catalog.EngineSpec, spec *catalog.Spec, prompt, out, voice, lang string, frames int) error {
+	binary := paths.EngineBinary(root, eng, eng.TTS)
+	args := []string{
+		"-m", paths.ModelFinal(root, spec),
+		"-mm", paths.FilePath(root, spec, spec.MMProj),
 		"-p", prompt,
 		"--output", out,
-		"--tts-lang", "en")
-	cmd.Dir = filepath.Dir(binary)
-	cmd.Env = []string{
-		"HOME=" + filepath.Join(root, "server-home"),
-		"PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+		"--tts-lang", lang,
 	}
+	if voice != "" {
+		args = append(args, "--tts-speaker-file", voice)
+	}
+	if frames > 0 {
+		args = append(args, "-n", strconv.Itoa(frames))
+	}
+	cmd := exec.CommandContext(ctx, binary, args...)
+	cmd.Dir = filepath.Dir(binary)
+	cmd.Env = scrubbedEnv(root)
 	cmd.Stdin = nil
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
@@ -238,9 +194,9 @@ func runSayQuiet(ctx context.Context, root string, eng *engineSpec, spec *modelS
 }
 
 // `chat -speak` voice: the first installed speech model, or none.
-func speechSpec(root string) *modelSpec {
+func speechSpec(root string) *catalog.Spec {
 	for _, spec := range allSpecs(root) {
-		if spec.kind == modalSpeech && modelInstalled(root, spec) {
+		if spec.Kind == catalog.Speech && modelInstalled(root, spec) {
 			return spec
 		}
 	}
@@ -248,10 +204,10 @@ func speechSpec(root string) *modelSpec {
 }
 
 // Synthesize text to a temp WAV and play it through the OS player.
-func speakText(ctx context.Context, spec *modelSpec, text string) error {
-	root := home()
-	eng := engine()
-	if eng == nil || eng.tts == "" {
+func speakText(ctx context.Context, spec *catalog.Spec, text string) error {
+	root := paths.Home()
+	eng := catalog.Engine()
+	if eng == nil || eng.TTS == "" {
 		return fmt.Errorf("no speech engine on this platform")
 	}
 	tmp, err := os.CreateTemp("", "fornax-speak-*.wav")
@@ -269,7 +225,7 @@ func speakText(ctx context.Context, spec *modelSpec, text string) error {
 	case "linux":
 		player = "aplay"
 	case "windows":
-		fmt.Printf("%s %s\n", dim("audio at"), work)
+		fmt.Printf("%s %s\n", ui.Dim("audio at"), work)
 		return nil
 	}
 	play := exec.CommandContext(ctx, player, work)

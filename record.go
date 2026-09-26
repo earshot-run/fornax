@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/earshot-run/fornax/internal/ui"
 )
 
 // `fornax record <out.wav> [-d seconds] [-r rate]`
@@ -24,19 +26,12 @@ func cmdRecord(ctx context.Context, args []string) error {
 	dur := set.Float64("d", 0, "stop after this many seconds (default: until ctrl-c)")
 	rate := set.Int("r", 16000, "sample rate in Hz")
 	usageLine := `usage: fornax record <out.wav> [-d seconds] [-r rate]`
-	set.Usage = func() { fmt.Fprintln(os.Stderr, usageLine) }
-	var outPath string
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		outPath, args = args[0], args[1:]
-	}
-	set.Parse(args)
-	rest := set.Args()
-	if outPath == "" && len(rest) > 0 {
-		outPath, rest = rest[0], rest[1:]
-	}
-	if outPath == "" || len(rest) > 0 {
+	set.Usage = ui.UsageFunc(set, usageLine)
+	got := parseFlexible(set, args, 1)
+	if len(got) != 1 {
 		return fmt.Errorf("%s", usageLine)
 	}
+	outPath := got[0]
 	if !strings.HasSuffix(strings.ToLower(outPath), ".wav") {
 		outPath += ".wav"
 	}
@@ -50,8 +45,8 @@ func cmdRecord(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if *dur <= 0 && isTTY(os.Stdin) {
-		fmt.Fprintf(os.Stderr, "%s\n", dim("recording… ctrl-c to stop"))
+	if *dur <= 0 && ui.IsTTY(os.Stdin) {
+		fmt.Fprintf(os.Stderr, "%s\n", ui.Dim("recording… ctrl-c to stop"))
 	}
 	cmd := exec.CommandContext(ctx, tool, recArgs...)
 	// afrecord/arecord only finalize the WAV header on a clean stop, so
@@ -73,7 +68,7 @@ func cmdRecord(ctx context.Context, args []string) error {
 	if err != nil || info.Size() == 0 {
 		return fmt.Errorf("%s wrote no audio to %s", filepath.Base(tool), outPath)
 	}
-	fmt.Printf("%s wrote %s (%.1fs)\n", green("✓"), outPath, elapsed.Seconds())
+	fmt.Printf("%s wrote %s (%.1fs)\n", ui.Green("✓"), outPath, elapsed.Seconds())
 	return nil
 }
 

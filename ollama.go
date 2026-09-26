@@ -16,9 +16,12 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"runtime"
 	"strings"
 	"time"
+
+	"github.com/earshot-run/fornax/internal/openai"
+	"github.com/earshot-run/fornax/internal/paths"
+	"github.com/earshot-run/fornax/internal/ui"
 )
 
 const ollamaRegistry = "https://registry.ollama.ai/v2"
@@ -91,7 +94,7 @@ func resolveOllama(ctx context.Context, ns, name, tag string) (digest string, mo
 		io.Copy(io.Discard, resp.Body)
 		return "", nil, nil, fmt.Errorf("registry.ollama.ai answered HTTP %d for %s", resp.StatusCode, url)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxHTTPBody))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, openai.MaxBody))
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("could not read the manifest: %w", err)
 	}
@@ -142,35 +145,33 @@ func ollamaFileName(ns, name, tag string) string {
 	return strings.Trim(idClean.ReplaceAllString(strings.ToLower(base+"-"+tag), "-"), "-") + ".gguf"
 }
 
-// `fornax pull ollama:<name>[:<tag>] [--as name] [--kind text|vision|audio]`
-func cmdPullOllama(ctx context.Context, args []string) error {
-	set := flag.NewFlagSet("pull", flag.ExitOnError)
-	as := set.String("as", "", "custom id to save the model under")
-	kind := set.String("kind", "", "text | vision | audio (default: text, or vision when the model ships a projector)")
-	set.Usage = func() {
-		fmt.Fprintln(os.Stderr, `usage: fornax pull ollama:<name>[:<tag>] [--as name]
-       (or paste an ollama.com/library/<name> URL)`)
-	}
-	set.Parse(args)
-	if set.NArg() != 1 {
-		return fmt.Errorf("usage: fornax pull ollama:<name>[:<tag>] [--as name] [--kind vision]")
-	}
-	ns, name, tag, err := parseOllamaRef(set.Arg(0))
+// `ollama:name[:tag]` spelled canonically — the ref a saved entry matches.
+func canonicalOllamaRef(ns, name, tag string) string {
+	return "ollama:" + ns + "/" + name + ":" + tag
+}
+
+// Turn an ollama ref into a saved custom model: resolve the manifest, pin
+// the layers, save. Nothing is downloaded — pull() does that later.
+func ensureOllama(ctx context.Context, arg, as, kind string) (*customEntry, error) {
+	ns, name, tag, err := parseOllamaRef(arg)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	root := home()
+	root := paths.Home()
 	store, err := loadCustoms(root)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	fetching := spin(fmt.Sprintf("resolving ollama:%s:%s", name, tag))
+	if existing := findCustom(store, canonicalOllamaRef(ns, name, tag), "", "", ""); existing != nil {
+		return existing, nil
+	}
+	fetching := ui.Spin(fmt.Sprintf("resolving ollama:%s:%s", name, tag))
 	manifestDigest, modelLayer, projLayer, err := resolveOllama(ctx, ns, name, tag)
 	if err != nil {
-		fetching.stop("")
-		return err
+		fetching.Stop("")
+		return nil, err
 	}
-	kindName := *kind
+	kindName := kind
 	if kindName == "" {
 		kindName = "text"
 		if projLayer != nil {
@@ -178,27 +179,21 @@ func cmdPullOllama(ctx context.Context, args []string) error {
 		}
 	}
 	if kindName != "text" && kindName != "vision" && kindName != "audio" {
-		fetching.stop("")
-		return fmt.Errorf("--kind must be text, vision or audio")
+		fetching.Stop("")
+		return nil, fmt.Errorf("--kind must be text, vision or audio")
 	}
 	if (kindName == "vision" || kindName == "audio") && projLayer == nil {
-		fetching.stop("")
-		return fmt.Errorf("ollama:%s:%s has no projector layer — --kind %s does not apply", name, tag, kindName)
+		fetching.Stop("")
+		return nil, fmt.Errorf("ollama:%s:%s has no projector layer — --kind %s does not apply", name, tag, kindName)
 	}
-	id := *as
-	if id == "" {
-		id = deriveOllamaID(name, tag)
+	id, err := customID(root, as, deriveOllamaID(name, tag))
+	if err != nil {
+		fetching.Stop("")
+		return nil, err
 	}
-	if id != strings.Trim(idClean.ReplaceAllString(strings.ToLower(id), "-"), "-") {
-		fetching.stop("")
-		return fmt.Errorf("--as %q is not a clean id — use lowercase letters, digits, dashes", *as)
-	}
-	if model(id) != nil || customSpec(root, id) != nil {
-		fetching.stop("")
-		return fmt.Errorf("%q is taken — pick another with --as (or `fornax rm %s` first)", id, id)
-	}
-	entry := customEntry{
+	entry := &customEntry{
 		ID: id, Kind: kindName,
+		Ref:      canonicalOllamaRef(ns, name, tag),
 		Repo:     fmt.Sprintf("ollama:%s/%s:%s", ns, name, tag),
 		Revision: manifestDigest,
 		File:     ollamaFileName(ns, name, tag),
@@ -207,32 +202,43 @@ func cmdPullOllama(ctx context.Context, args []string) error {
 		URL:      ollamaBlobURL(ns, name, modelLayer.Digest),
 	}
 	if projLayer != nil && kindName != "text" {
-		entry.MMProj = &struct {
-			File   string `json:"file"`
-			Bytes  int64  `json:"bytes"`
-			SHA256 string `json:"sha256"`
-			URL    string `json:"url,omitempty"`
-		}{
+		entry.MMProj = &customPin{
 			File:   "mmproj-" + entry.File,
 			Bytes:  projLayer.Size,
 			SHA256: strings.TrimPrefix(projLayer.Digest, "sha256:"),
 			URL:    ollamaBlobURL(ns, name, projLayer.Digest),
 		}
 	}
-	fetching.stop("")
-	eng := engine()
-	if eng == nil {
-		return fmt.Errorf("fornax does not have a pinned llama.cpp for %s/%s yet", runtime.GOOS, runtime.GOARCH)
+	fetching.Stop("")
+	if err := saveCustom(root, store, *entry); err != nil {
+		return nil, err
+	}
+	return entry, nil
+}
+
+// `fornax pull ollama:<name>[:<tag>] [--as name] [--kind text|vision|audio]`
+func cmdPullOllama(ctx context.Context, args []string) error {
+	set := flag.NewFlagSet("pull", flag.ExitOnError)
+	as := set.String("as", "", "custom id to save the model under")
+	kind := set.String("kind", "", "text | vision | audio (default: text, or vision when the model ships a projector)")
+	set.Usage = ui.UsageFunc(set, `usage: fornax pull ollama:<name>[:<tag>] [--as name]
+       (or paste an ollama.com/library/<name> URL)`)
+	ref := parseFlexible(set, args, 1)
+	if len(ref) != 1 {
+		return fmt.Errorf("usage: fornax pull ollama:<name>[:<tag>] [--as name] [--kind vision]")
+	}
+	entry, err := ensureOllama(ctx, ref[0], *as, *kind)
+	if err != nil {
+		return err
+	}
+	eng, err := llamaEngine()
+	if err != nil {
+		return err
 	}
 	if err := pull(ctx, entry.spec(), eng); err != nil {
 		return err
 	}
-	entry.Port = nextCustomPort(store)
-	store.Models = append(store.Models, entry)
-	if err := saveCustoms(root, store); err != nil {
-		return fmt.Errorf("model installed but could not save %s: %w", customFile, err)
-	}
 	fmt.Fprintf(os.Stderr, "%s saved as %s — `fornax ask %s …` / `fornax run %s`\n",
-		green("✓"), bold(id), id, id)
+		ui.Green("✓"), ui.Bold(entry.ID), entry.ID, entry.ID)
 	return nil
 }

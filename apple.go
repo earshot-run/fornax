@@ -23,12 +23,19 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/earshot-run/fornax/internal/catalog"
+	"github.com/earshot-run/fornax/internal/events"
+	"github.com/earshot-run/fornax/internal/openai"
+	"github.com/earshot-run/fornax/internal/paths"
+	"github.com/earshot-run/fornax/internal/ui"
 )
 
 //go:embed bridge.swift
@@ -56,27 +63,27 @@ func appleSourceSHA() string {
 	return hex.EncodeToString(sum[:])
 }
 
-func appleBridgePath(root string, spec *modelSpec) string {
-	return filepath.Join(modelDir(root, spec), appleBridgeName)
+func appleBridgePath(root string, spec *catalog.Spec) string {
+	return filepath.Join(paths.ModelDir(root, spec), appleBridgeName)
 }
 
 // Installed = the compiled bridge exists, the source on disk matches the
 // embedded copy, and the receipt recorded that source's digest.
-func appleInstalled(root string, spec *modelSpec) bool {
+func appleInstalled(root string, spec *catalog.Spec) bool {
 	if info, err := os.Stat(appleBridgePath(root, spec)); err != nil || info.IsDir() {
 		return false
 	}
-	data, err := os.ReadFile(filepath.Join(modelDir(root, spec), "bridge.swift"))
+	data, err := os.ReadFile(filepath.Join(paths.ModelDir(root, spec), "bridge.swift"))
 	if err != nil || fmt.Sprintf("%x", sha256.Sum256(data)) != appleSourceSHA() {
 		return false
 	}
-	receiptData, err := os.ReadFile(filepath.Join(modelDir(root, spec), receipt))
+	receiptData, err := os.ReadFile(filepath.Join(paths.ModelDir(root, spec), paths.Receipt))
 	return err == nil && strings.TrimSpace(string(receiptData)) == appleSourceSHA()
 }
 
 // Compile the embedded Swift bridge once per fornax version (the receipt
 // tracks the source digest, so a changed bridge.swift recompiles).
-func ensureAppleModel(ctx context.Context, root string, spec *modelSpec) error {
+func ensureAppleModel(ctx context.Context, root string, spec *catalog.Spec) error {
 	if err := appleSupported(); err != nil {
 		return err
 	}
@@ -91,34 +98,34 @@ func ensureAppleModel(ctx context.Context, root string, spec *modelSpec) error {
 		}
 		swiftc = strings.TrimSpace(string(out))
 	}
-	dir := modelDir(root, spec)
-	if err := protectDir(dir); err != nil {
+	dir := paths.ModelDir(root, spec)
+	if err := paths.ProtectDir(dir); err != nil {
 		return err
 	}
 	sourcePath := filepath.Join(dir, "bridge.swift")
-	if err := atomicPrivate(sourcePath, appleBridgeSource); err != nil {
+	if err := paths.AtomicPrivate(sourcePath, appleBridgeSource); err != nil {
 		return err
 	}
-	compiling := spin("compiling fm-bridge")
+	compiling := ui.Spin("compiling fm-bridge")
 	tmp := filepath.Join(dir, appleBridgeName+".tmp-write")
 	cmd := exec.CommandContext(ctx, swiftc, "-parse-as-library", "-O", "-o", tmp, "bridge.swift")
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		compiling.stop("")
+		compiling.Stop("")
 		os.Remove(tmp)
 		return fmt.Errorf("swiftc failed: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
 	if err := os.Chmod(tmp, 0o700); err != nil {
-		compiling.stop("")
+		compiling.Stop("")
 		return err
 	}
 	if err := os.Rename(tmp, appleBridgePath(root, spec)); err != nil {
-		compiling.stop("")
+		compiling.Stop("")
 		return fmt.Errorf("could not install the bridge: %w", err)
 	}
-	compiling.stop("")
-	return atomicPrivate(filepath.Join(dir, receipt), []byte(appleSourceSHA()+"\n"))
+	compiling.Stop("")
+	return paths.AtomicPrivate(filepath.Join(dir, paths.Receipt), []byte(appleSourceSHA()+"\n"))
 }
 
 // One JSONL line from the bridge.
@@ -142,16 +149,10 @@ type appleBridge struct {
 	nextID int
 }
 
-func spawnAppleBridge(root string, spec *modelSpec, log *os.File) (*appleBridge, error) {
+func spawnAppleBridge(root string, spec *catalog.Spec, log *os.File) (*appleBridge, error) {
 	cmd := exec.Command(appleBridgePath(root, spec))
-	cmd.Dir = modelDir(root, spec)
-	cmd.Env = []string{
-		"HOME=" + filepath.Join(root, "server-home"),
-		"PATH=/usr/bin:/bin:/usr/sbin:/sbin",
-	}
-	if tmp := os.Getenv("TMPDIR"); tmp != "" {
-		cmd.Env = append(cmd.Env, "TMPDIR="+tmp)
-	}
+	cmd.Dir = paths.ModelDir(root, spec)
+	cmd.Env = scrubbedEnv(root)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -266,7 +267,7 @@ func (b *appleBridge) generate(messages []map[string]string, stream bool, onToke
 // The loopback adapter: an http.Server that answers like llama-server.
 type appleServer struct {
 	root   string
-	spec   *modelSpec
+	spec   *catalog.Spec
 	key    string
 	bridge *appleBridge
 	srv    *http.Server
@@ -292,7 +293,7 @@ func (s *appleServer) ensureBridge() (*appleBridge, error) {
 
 // Serve an adapter on port; returns once it is listening (readiness is
 // proven by waitReady polling /health + /v1/models, same as llama).
-func startAppleServer(root string, spec *modelSpec, port int, key, logPath string) (*appleServer, error) {
+func startAppleServer(root string, spec *catalog.Spec, port int, key, logPath string) (*appleServer, error) {
 	var log *os.File
 	if logPath != "" {
 		var err error
@@ -332,7 +333,7 @@ func (s *appleServer) mux() *http.ServeMux {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"object": "list",
 			"data": []map[string]any{{
-				"id": s.spec.id, "object": "model", "created": 0, "owned_by": "apple",
+				"id": s.spec.ID, "object": "model", "created": 0, "owned_by": "apple",
 			}},
 		})
 	}))
@@ -392,7 +393,7 @@ func (s *appleServer) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		} `json:"messages"`
 		Stream bool `json:"stream"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, maxHTTPBody)).Decode(&req); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, openai.MaxBody)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{"message": "unreadable request: " + err.Error()}})
 		return
 	}
@@ -429,7 +430,7 @@ func (s *appleServer) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"id":     "chatcmpl-apple",
 			"object": "chat.completion",
-			"model":  s.spec.id,
+			"model":  s.spec.ID,
 			"choices": []map[string]any{{
 				"index":         0,
 				"message":       map[string]any{"role": "assistant", "content": reply},
@@ -457,7 +458,7 @@ func (s *appleServer) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		data, _ := json.Marshal(map[string]any{
 			"id":     "chatcmpl-apple",
 			"object": "chat.completion.chunk",
-			"model":  s.spec.id,
+			"model":  s.spec.ID,
 			"choices": []map[string]any{{
 				"index": 0,
 				"delta": map[string]any{"content": delta},
@@ -496,58 +497,58 @@ func (s *appleServer) shutdown() {
 
 // The apple path through withServer: reuse a running adapter, else compile
 // the bridge if needed, serve in-process on a scratch port, tear down after.
-func withApple(ctx context.Context, root string, spec *modelSpec, fn func(url, key string) error) error {
-	key, err := ensureKey(root)
+func withApple(ctx context.Context, root string, spec *catalog.Spec, fn func(url, key string) error) error {
+	key, err := paths.EnsureKey(root)
 	if err != nil {
 		return err
 	}
-	if contains(servedModels(spec.port, key), spec.id) {
-		fmt.Fprintf(os.Stderr, "%s\n", dim(fmt.Sprintf("reusing %s on :%d", spec.id, spec.port)))
-		return fn(endpointURL(spec.port), key)
+	if slices.Contains(servedModels(spec.Port, key), spec.ID) {
+		fmt.Fprintf(os.Stderr, "%s\n", ui.Dim(fmt.Sprintf("reusing %s on :%d", spec.ID, spec.Port)))
+		return fn(paths.EndpointURL(spec.Port), key)
 	}
 	port, err := freePort(scratchPortBase)
 	if err != nil {
 		return err
 	}
-	loading := spin("loading " + spec.id)
+	loading := ui.Spin("loading " + spec.ID)
 	logPath := filepath.Join(root, "server.log")
 	srv, err := startAppleServer(root, spec, port, key, logPath)
 	if err != nil {
-		loading.stop("")
+		loading.Stop("")
 		return fmt.Errorf("%w — server log: %s", err, logPath)
 	}
 	defer srv.shutdown()
-	loading.stop("")
-	return fn(endpointURL(port), key)
+	loading.Stop("")
+	return fn(paths.EndpointURL(port), key)
 }
 
 // `run apple-fm`: the adapter serves in the foreground until Ctrl-C, same
 // shape as the llama path in cmdRun — waitReady, panel, then babysit the
 // bridge process.
-func runApple(ctx context.Context, root string, spec *modelSpec, port int, ctxIgnored, noConnect bool, idle time.Duration) error {
+func runApple(ctx context.Context, root string, spec *catalog.Spec, port int, ctxIgnored, noConnect bool, idle time.Duration) error {
 	if ctxIgnored {
 		fmt.Fprintln(os.Stderr, "note: -ctx-size is ignored for apple-fm (the OS manages context)")
 	}
-	key, err := ensureKey(root)
+	key, err := paths.EnsureKey(root)
 	if err != nil {
 		return err
 	}
 	if err := portFree(port); err != nil {
 		return err
 	}
-	emit("stage", map[string]any{"stage": "loading", "model": spec.id})
-	loading := spin("loading " + spec.id)
-	srv, err := startAppleServer(root, spec, port, key, serverLog(root))
+	events.Emit("stage", map[string]any{"stage": "loading", "model": spec.ID})
+	loading := ui.Spin("loading " + spec.ID)
+	srv, err := startAppleServer(root, spec, port, key, paths.ServerLog(root))
 	if err != nil {
-		loading.stop("")
+		loading.Stop("")
 		return err
 	}
-	if err := waitReady(ctx, srv.bridge.exited, port, spec.id, key, true); err != nil {
-		loading.stop("")
+	if err := waitReady(ctx, srv.bridge.exited, port, spec.ID, key, true); err != nil {
+		loading.Stop("")
 		srv.shutdown()
 		return err
 	}
-	loading.stop("")
+	loading.Stop("")
 	return holdServing(ctx, &serving{
 		spec: spec, port: port, key: key, noConnect: noConnect, idle: idle,
 		process: "fm-bridge", exited: srv.bridge.exited, stop: srv.shutdown,
@@ -555,21 +556,21 @@ func runApple(ctx context.Context, root string, spec *modelSpec, port int, ctxIg
 	})
 }
 
-func runAppleBench(ctx context.Context, spec *modelSpec, calls int) error {
+func runAppleBench(ctx context.Context, spec *catalog.Spec, calls int) error {
 	return withServer(ctx, spec, nil, func(url, key string) error {
 		var lat []float64
 		for i := 0; i < calls; i++ {
 			started := time.Now()
-			if _, err := chatOnce(ctx, url, key, spec.id,
-				[]message{textMessage("user", "Reply with exactly: ok")}, 8); err != nil {
+			if _, err := openai.Once(ctx, url, key, spec.ID,
+				[]openai.Message{openai.TextMessage("user", "Reply with exactly: ok")}, 8); err != nil {
 				return err
 			}
 			ms := float64(time.Since(started).Milliseconds())
 			lat = append(lat, ms)
-			fmt.Printf("  %s %.0f ms\n", dim(fmt.Sprintf("run %d", i+1)), ms)
+			fmt.Printf("  %s %.0f ms\n", ui.Dim(fmt.Sprintf("run %d", i+1)), ms)
 		}
 		sort.Float64s(lat)
-		fmt.Printf("%s %s — median %.0f ms over %d requests\n", green("✓"), bold(spec.id), lat[len(lat)/2], len(lat))
+		fmt.Printf("%s %s — median %.0f ms over %d requests\n", ui.Green("✓"), ui.Bold(spec.ID), lat[len(lat)/2], len(lat))
 		return nil
 	})
 }

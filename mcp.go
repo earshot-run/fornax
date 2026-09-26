@@ -4,7 +4,7 @@ package main
 // MCP-aware agents (Claude Code, Cursor) can drive the local models. stdout
 // carries only protocol replies: every spinner, progress bar and engine
 // line stays on stderr, and the two foreground helpers that would print a
-// success line (runSay, runDraw) get os.Stdout redirected while they run.
+// success line (runSay, runSD) get os.Stdout redirected while they run.
 // Requests run one at a time — a model load can take minutes and the
 // scratch servers are spawned --parallel 1 anyway.
 
@@ -14,8 +14,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/earshot-run/fornax/internal/catalog"
+	"github.com/earshot-run/fornax/internal/openai"
+	"github.com/earshot-run/fornax/internal/paths"
+	"github.com/earshot-run/fornax/internal/ui"
 )
 
 // The MCP revision this server speaks; serverInfo.version rides on the
@@ -46,7 +52,7 @@ func cmdMCP(ctx context.Context, args []string) error {
 	}
 	out := bufio.NewWriter(os.Stdout)
 	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, 0, 64*1024), 8*maxHTTPBody)
+	scanner.Buffer(make([]byte, 0, 64*1024), 8*openai.MaxBody)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -143,11 +149,13 @@ func mcpRunTool(ctx context.Context, name string, args json.RawMessage) (string,
 		return mcpHear(ctx, args)
 	case "embed":
 		return mcpEmbed(ctx, args)
-	case "draw":
-		return mcpDraw(ctx, args)
+	case "imagine":
+		return mcpImagine(ctx, args)
+	case "animate":
+		return mcpAnimate(ctx, args)
 	case "say":
 		return mcpSay(ctx, args)
-	case "list":
+	case "models":
 		return mcpList()
 	}
 	return "", fmt.Errorf("unknown tool %q", name)
@@ -160,25 +168,25 @@ func mcpArgs(args json.RawMessage, v any) error {
 	return json.Unmarshal(args, v)
 }
 
-// The model to serve: the explicit id, or the first catalog spec of a
-// wanted kind — an installed one when there is a choice.
-func mcpResolve(id string, kinds ...modality) (*modelSpec, *engineSpec, error) {
+// The model to serve: the explicit id, or the first spec of a wanted kind —
+// an installed one when there is a choice.
+func mcpResolve(ctx context.Context, id string, kinds ...catalog.Modality) (*catalog.Spec, *catalog.EngineSpec, error) {
 	if id == "" {
-		spec := mcpDefaultSpec(home(), kinds...)
+		spec := mcpDefaultSpec(paths.Home(), kinds...)
 		if spec == nil {
-			return nil, nil, fmt.Errorf("the catalog has no %s model", kinds[0])
+			return nil, nil, fmt.Errorf("no %s model is saved — pull one or pass a model id", kinds[0])
 		}
-		id = spec.id
+		id = spec.ID
 	}
-	return resolve(id)
+	return resolve(ctx, id)
 }
 
-func mcpDefaultSpec(root string, kinds ...modality) *modelSpec {
-	var fallback *modelSpec
+func mcpDefaultSpec(root string, kinds ...catalog.Modality) *catalog.Spec {
+	var fallback *catalog.Spec
 	for _, spec := range allSpecs(root) {
 		match := false
 		for _, kind := range kinds {
-			if spec.kind == kind {
+			if spec.Kind == kind {
 				match = true
 			}
 		}
@@ -197,10 +205,10 @@ func mcpDefaultSpec(root string, kinds ...modality) *modelSpec {
 
 // runAsk/runSee/runHear all stream to stdout; the MCP path is the same
 // withServer + chat completion minus the printing.
-func mcpChat(ctx context.Context, spec *modelSpec, eng *engineSpec, msgs []message) (string, error) {
-	var reply *chatReply
+func mcpChat(ctx context.Context, spec *catalog.Spec, eng *catalog.EngineSpec, msgs []openai.Message) (string, error) {
+	var reply *openai.Reply
 	err := withServer(ctx, spec, eng, func(url, key string) error {
-		r, err := chatOnce(ctx, url, key, spec.id, msgs, -1)
+		r, err := openai.Once(ctx, url, key, spec.ID, msgs, -1)
 		if err != nil {
 			return err
 		}
@@ -216,7 +224,7 @@ func mcpChat(ctx context.Context, spec *modelSpec, eng *engineSpec, msgs []messa
 	return reply.Text, nil
 }
 
-// runSay/runDraw end with a `wrote …` line on stdout. Under MCP that fd is
+// runSay/runSD end with a `wrote …` line on stdout. Under MCP that fd is
 // protocol-only, so their payload line goes to stderr for the call's span —
 // where the codebase sends status anyway.
 func mcpMuteStdout(fn func() error) error {
@@ -237,23 +245,18 @@ func mcpAsk(ctx context.Context, args json.RawMessage) (string, error) {
 	if in.Prompt == "" {
 		return "", fmt.Errorf("ask wants a prompt")
 	}
-	spec, eng, err := mcpResolve(in.Model, modalText, modalVision, modalAudio)
+	spec, eng, err := mcpResolve(ctx, in.Model, catalog.Text, catalog.Vision, catalog.Audio)
 	if err != nil {
 		return "", err
 	}
-	switch {
-	case spec.rt == runtimeKev:
-		return "", fmt.Errorf("%s answers typed questions, not prompts", spec.id)
-	case spec.kind == modalEmbed:
-		return "", fmt.Errorf("%s embeds, it does not chat — use the embed tool", spec.id)
-	case spec.kind == modalImage:
-		return "", fmt.Errorf("%s draws, it does not chat — use the draw tool", spec.id)
-	case spec.kind == modalSpeech:
-		return "", fmt.Errorf("%s speaks, it does not chat — use the say tool", spec.id)
-	case spec.kind == modalRerank:
-		return "", fmt.Errorf("%s reranks, it does not chat", spec.id)
+	if does, command, _ := instead(spec); does != "" {
+		switch command {
+		case "imagine", "animate", "say", "embed":
+			return "", fmt.Errorf("%s %s, it does not chat — use the %s tool", spec.ID, does, command)
+		}
+		return "", fmt.Errorf("%s %s, it does not chat", spec.ID, does)
 	}
-	return mcpChat(ctx, spec, eng, []message{textMessage("user", in.Prompt)})
+	return mcpChat(ctx, spec, eng, []openai.Message{openai.TextMessage("user", in.Prompt)})
 }
 
 func mcpSee(ctx context.Context, args json.RawMessage) (string, error) {
@@ -271,18 +274,18 @@ func mcpSee(ctx context.Context, args json.RawMessage) (string, error) {
 	if in.Question == "" {
 		in.Question = "Describe this image."
 	}
-	spec, eng, err := mcpResolve(in.Model, modalVision)
+	spec, eng, err := mcpResolve(ctx, in.Model, catalog.Vision)
 	if err != nil {
 		return "", err
 	}
-	if spec.kind != modalVision {
-		return "", fmt.Errorf("%s cannot see — pick a vision model", spec.id)
+	if spec.Kind != catalog.Vision {
+		return "", fmt.Errorf("%s cannot see — pick a vision model", spec.ID)
 	}
-	part, err := imagePart(in.Image)
+	part, err := openai.ImagePart(in.Image)
 	if err != nil {
 		return "", err
 	}
-	msgs := []message{{
+	msgs := []openai.Message{{
 		Role: "user",
 		Content: []any{
 			map[string]any{"type": "text", "text": in.Question},
@@ -307,18 +310,18 @@ func mcpHear(ctx context.Context, args json.RawMessage) (string, error) {
 	if in.Question == "" {
 		in.Question = "Transcribe what is said."
 	}
-	spec, eng, err := mcpResolve(in.Model, modalAudio)
+	spec, eng, err := mcpResolve(ctx, in.Model, catalog.Audio)
 	if err != nil {
 		return "", err
 	}
-	if spec.kind != modalAudio {
-		return "", fmt.Errorf("%s cannot hear — pick an audio model", spec.id)
+	if spec.Kind != catalog.Audio {
+		return "", fmt.Errorf("%s cannot hear — pick an audio model", spec.ID)
 	}
-	part, err := audioPart(in.Audio)
+	part, err := openai.AudioPart(in.Audio)
 	if err != nil {
 		return "", err
 	}
-	msgs := []message{{
+	msgs := []openai.Message{{
 		Role: "user",
 		Content: []any{
 			map[string]any{"type": "text", "text": in.Question},
@@ -339,16 +342,16 @@ func mcpEmbed(ctx context.Context, args json.RawMessage) (string, error) {
 	if in.Text == "" {
 		return "", fmt.Errorf("embed wants text")
 	}
-	spec, eng, err := mcpResolve(in.Model, modalEmbed)
+	spec, eng, err := mcpResolve(ctx, in.Model, catalog.Embed)
 	if err != nil {
 		return "", err
 	}
-	if spec.kind != modalEmbed {
-		return "", fmt.Errorf("%s does not embed — pick an embed model", spec.id)
+	if spec.Kind != catalog.Embed {
+		return "", fmt.Errorf("%s does not embed — pick an embed model", spec.ID)
 	}
 	var vec []float64
 	err = withServer(ctx, spec, eng, func(url, key string) error {
-		v, err := embedOnce(ctx, url, key, spec.id, in.Text)
+		v, err := embedOnce(ctx, url, key, spec.ID, in.Text)
 		if err != nil {
 			return err
 		}
@@ -362,47 +365,59 @@ func mcpEmbed(ctx context.Context, args json.RawMessage) (string, error) {
 		Model      string    `json:"model"`
 		Dimensions int       `json:"dimensions"`
 		Embedding  []float64 `json:"embedding"`
-	}{spec.id, len(vec), vec})
+	}{spec.ID, len(vec), vec})
 	return string(out), nil
 }
 
-func mcpDraw(ctx context.Context, args json.RawMessage) (string, error) {
+func mcpImagine(ctx context.Context, args json.RawMessage) (string, error) {
+	return mcpSD(ctx, args, "imagine", catalog.Image, "png")
+}
+
+func mcpAnimate(ctx context.Context, args json.RawMessage) (string, error) {
+	return mcpSD(ctx, args, "animate", catalog.Video, "webm")
+}
+
+func mcpSD(ctx context.Context, args json.RawMessage, verb string, kind catalog.Modality, ext string) (string, error) {
 	var in struct {
 		Prompt string `json:"prompt"`
+		Image  string `json:"image"`
 		Out    string `json:"out"`
+		Model  string `json:"model"`
 	}
 	if err := mcpArgs(args, &in); err != nil {
 		return "", err
 	}
 	if in.Prompt == "" {
-		return "", fmt.Errorf("draw wants a prompt")
+		return "", fmt.Errorf("%s wants a prompt", verb)
 	}
-	spec, eng, err := mcpResolve("", modalImage)
+	spec, _, err := mcpResolve(ctx, in.Model, kind)
 	if err != nil {
 		return "", err
 	}
-	if spec.rt != runtimeSD {
-		return "", fmt.Errorf("%s does not draw — pick an image model", spec.id)
+	if spec.Runtime != catalog.SD || spec.Kind != kind {
+		return "", fmt.Errorf("%s cannot %s — add a model with `fornax pull hf:… --kind %s`", spec.ID, verb, kind)
 	}
-	if in.Out == "" {
-		in.Out = fmt.Sprintf("draw-%d.png", time.Now().Unix())
+	out := in.Out
+	if out == "" {
+		out = fmt.Sprintf("%s-%d.%s", verb, time.Now().Unix(), ext)
 	}
-	root := home()
-	if err := pull(ctx, spec, eng); err != nil {
-		return "", err
+	var extra []string
+	if in.Image != "" {
+		extra = append(extra, "-i", in.Image)
 	}
-	verifying := spin("verifying " + spec.id)
-	if err := rehash(root, spec); err != nil {
-		verifying.stop("")
-		return "", err
-	}
-	verifying.stop("")
 	if err := mcpMuteStdout(func() error {
-		return runDraw(ctx, root, eng, spec, in.Prompt, "", in.Out, 512, 512, 4, -1)
+		root, eng, err := prepareSD(ctx, spec)
+		if err != nil {
+			return err
+		}
+		return runSD(ctx, root, eng, spec, in.Prompt, out, -1, extra)
 	}); err != nil {
 		return "", err
 	}
-	return "wrote " + in.Out, nil
+	if abs, err := filepath.Abs(out); err == nil {
+		out = abs
+	}
+	return "wrote " + out, nil
 }
 
 func mcpSay(ctx context.Context, args json.RawMessage) (string, error) {
@@ -410,6 +425,7 @@ func mcpSay(ctx context.Context, args json.RawMessage) (string, error) {
 		Text  string `json:"text"`
 		Out   string `json:"out"`
 		Voice string `json:"voice"`
+		Model string `json:"model"`
 	}
 	if err := mcpArgs(args, &in); err != nil {
 		return "", err
@@ -417,12 +433,12 @@ func mcpSay(ctx context.Context, args json.RawMessage) (string, error) {
 	if in.Text == "" {
 		return "", fmt.Errorf("say wants text")
 	}
-	spec, eng, err := mcpResolve("", modalSpeech)
+	spec, eng, err := mcpResolve(ctx, in.Model, catalog.Speech)
 	if err != nil {
 		return "", err
 	}
-	if spec.kind != modalSpeech {
-		return "", fmt.Errorf("%s does not speak — pick a speech model", spec.id)
+	if spec.Kind != catalog.Speech {
+		return "", fmt.Errorf("%s does not speak — pick a speech model", spec.ID)
 	}
 	if in.Voice != "" {
 		if info, err := os.Stat(in.Voice); err != nil || info.IsDir() {
@@ -432,16 +448,16 @@ func mcpSay(ctx context.Context, args json.RawMessage) (string, error) {
 	if in.Out == "" {
 		in.Out = fmt.Sprintf("say-%d.wav", time.Now().Unix())
 	}
-	root := home()
+	root := paths.Home()
 	if err := pull(ctx, spec, eng); err != nil {
 		return "", err
 	}
-	verifying := spin("verifying " + spec.id)
+	verifying := ui.Spin("verifying " + spec.ID)
 	if err := rehash(root, spec); err != nil {
-		verifying.stop("")
+		verifying.Stop("")
 		return "", err
 	}
-	verifying.stop("")
+	verifying.Stop("")
 	if err := mcpMuteStdout(func() error {
 		return runSay(ctx, root, eng, spec, in.Text, in.Out, in.Voice, "en", 0)
 	}); err != nil {
@@ -451,18 +467,18 @@ func mcpSay(ctx context.Context, args json.RawMessage) (string, error) {
 }
 
 func mcpList() (string, error) {
-	root := home()
+	root := paths.Home()
 	var lines strings.Builder
 	for _, spec := range allSpecs(root) {
-		size := humanSize(spec.sizeBytes())
-		if spec.rt == runtimeApple {
+		size := ui.HumanSize(spec.SizeBytes())
+		if spec.Runtime == catalog.Apple {
 			size = "os"
 		}
 		status := "-"
 		if modelInstalled(root, spec) {
 			status = "installed"
 		}
-		fmt.Fprintf(&lines, "%s %s %s %s\n", spec.id, spec.kind, size, status)
+		fmt.Fprintf(&lines, "%s %s %s %s\n", spec.ID, spec.Kind, size, status)
 	}
 	return lines.String(), nil
 }
@@ -475,7 +491,7 @@ func mcpTools() []any {
 		return map[string]any{"type": "object", "properties": props, "required": required}
 	}
 	model := func(kind string) map[string]any {
-		return str(fmt.Sprintf("catalog model id — default: the first installed %s model", kind))
+		return str(fmt.Sprintf("model id — default: the first installed %s model", kind))
 	}
 	return []any{
 		map[string]any{
@@ -513,11 +529,23 @@ func mcpTools() []any {
 			}, []string{"text"}),
 		},
 		map[string]any{
-			"name":        "draw",
-			"description": "Generate a 512x512 PNG with the stable-diffusion.cpp image model.",
+			"name":        "imagine",
+			"description": "Generate an image with a local stable-diffusion.cpp model.",
 			"inputSchema": obj(map[string]any{
 				"prompt": str("the image prompt"),
-				"out":    str("PNG path — default: draw-<timestamp>.png"),
+				"image":  str("path to a still image to start from"),
+				"out":    str("PNG path — default: imagine-<timestamp>.png"),
+				"model":  model("image"),
+			}, []string{"prompt"}),
+		},
+		map[string]any{
+			"name":        "animate",
+			"description": "Text or a still image to a short video clip (.webm) with the local video model. Takes minutes.",
+			"inputSchema": obj(map[string]any{
+				"prompt": str("what happens in the clip"),
+				"image":  str("path to a still image the clip starts from"),
+				"out":    str("output path, .webm .avi or .webp — default: animate-<timestamp>.webm"),
+				"model":  model("video"),
 			}, []string{"prompt"}),
 		},
 		map[string]any{
@@ -527,11 +555,12 @@ func mcpTools() []any {
 				"text":  str("the text to speak"),
 				"out":   str("WAV path — default: say-<timestamp>.wav"),
 				"voice": str("reference audio file to clone the voice from"),
+				"model": model("speech"),
 			}, []string{"text"}),
 		},
 		map[string]any{
-			"name":        "list",
-			"description": "Every catalog model: id, kind, size, installed.",
+			"name":        "models",
+			"description": "Every model: id, kind, size, installed.",
 			"inputSchema": obj(map[string]any{}, []string{}),
 		},
 	}

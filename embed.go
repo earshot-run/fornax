@@ -15,50 +15,23 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/earshot-run/fornax/internal/catalog"
+	"github.com/earshot-run/fornax/internal/openai"
+	"github.com/earshot-run/fornax/internal/ui"
 )
 
-func init() {
-	models = append(models, modelSpec{
-		id:      "nomic-embed",
-		name:    "Nomic Embed v1.5",
-		summary: "Turns text into vectors — for search and RAG.",
-		kind:    modalEmbed,
-		repo:    "nomic-ai/nomic-embed-text-v1.5-GGUF",
-		model: filePin{
-			file:     "nomic-embed-text-v1.5.Q4_K_M.gguf",
-			revision: "0188c9bf409793f810680a5a431e7b899c46104c",
-			bytes:    84_106_624,
-			sha256:   "d4e388894e09cf3816e8b0896d81d265b55e7a9fff9ab03fe8bf4ef5e11295ac",
-		},
-		port: 7361,
-	})
-	models = append(models, modelSpec{
-		id:      "embeddinggemma-300m",
-		name:    "EmbeddingGemma 300M",
-		summary: "Google's small embedder — strong on multilingual retrieval.",
-		kind:    modalEmbed,
-		repo:    "ggml-org/embeddinggemma-300M-GGUF",
-		model: filePin{
-			file:     "embeddinggemma-300M-Q8_0.gguf",
-			revision: "0f741b5a6585bd53aeb15cd1372c56f2a0f65e12",
-			bytes:    333_590_944,
-			sha256:   "b5ce9d77a3fc4b3b39ccb5643c36777911cc4eb46a66962eadfa3f5f60490d63",
-		},
-		port: 7363,
-	})
-}
-
 func cmdEmbed(ctx context.Context, args []string) error {
-	spec, eng, rest, err := modelArgs("embed", args, " [text…]  (or pipe it on stdin)")
+	spec, eng, rest, err := modelArgs(ctx, "embed", args, " [text…]  (or pipe it on stdin)")
 	if err != nil {
 		return err
 	}
-	if spec.kind != modalEmbed {
-		return fmt.Errorf("%s does not embed — pick an embed model (`list`)", spec.id)
+	if spec.Kind != catalog.Embed {
+		return fmt.Errorf("%s does not embed — pick an embed model (`list`)", spec.ID)
 	}
 	text := strings.Join(rest, " ")
 	if text == "" {
-		if isTTY(os.Stdin) {
+		if ui.IsTTY(os.Stdin) {
 			return fmt.Errorf("usage: fornax embed <model> <text…>  (or pipe text on stdin)")
 		}
 		data, err := io.ReadAll(os.Stdin)
@@ -71,7 +44,7 @@ func cmdEmbed(ctx context.Context, args []string) error {
 		return fmt.Errorf("usage: fornax embed <model> <text…>")
 	}
 	return withServer(ctx, spec, eng, func(url, key string) error {
-		vec, err := embedOnce(ctx, url, key, spec.id, text)
+		vec, err := embedOnce(ctx, url, key, spec.ID, text)
 		if err != nil {
 			return err
 		}
@@ -79,7 +52,7 @@ func cmdEmbed(ctx context.Context, args []string) error {
 			Model      string    `json:"model"`
 			Dimensions int       `json:"dimensions"`
 			Embedding  []float64 `json:"embedding"`
-		}{spec.id, len(vec), vec})
+		}{spec.ID, len(vec), vec})
 		fmt.Println(string(out))
 		return nil
 	})
@@ -91,20 +64,20 @@ func embedOnce(ctx context.Context, url, key, model, text string) ([]float64, er
 		"model": model,
 		"input": text,
 	})
-	resp, err := post(ctx, url+"/embeddings", key, body)
+	resp, err := openai.Post(ctx, url+"/embeddings", key, body)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, apiError(resp)
+		return nil, openai.Error(resp)
 	}
 	var parsed struct {
 		Data []struct {
 			Embedding json.RawMessage `json:"embedding"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxHTTPBody)).Decode(&parsed); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, openai.MaxBody)).Decode(&parsed); err != nil {
 		return nil, fmt.Errorf("the reply was not readable: %w", err)
 	}
 	if len(parsed.Data) == 0 {
@@ -122,35 +95,35 @@ func embedOnce(ctx context.Context, url, key, model, text string) ([]float64, er
 	return nil, fmt.Errorf("the server returned an embedding shape fornax cannot read")
 }
 
-func runEmbedTest(ctx context.Context, spec *modelSpec, eng *engineSpec) error {
+func runEmbedTest(ctx context.Context, spec *catalog.Spec, eng *catalog.EngineSpec) error {
 	return withServer(ctx, spec, eng, func(url, key string) error {
 		started := time.Now()
-		vec, err := embedOnce(ctx, url, key, spec.id, "Reply with exactly: ok")
+		vec, err := embedOnce(ctx, url, key, spec.ID, "Reply with exactly: ok")
 		elapsed := time.Since(started)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("%s %s — %d dims in %.1fs\n", green("✓"), bold(spec.id), len(vec), elapsed.Seconds())
+		fmt.Printf("%s %s — %d dims in %.1fs\n", ui.Green("✓"), ui.Bold(spec.ID), len(vec), elapsed.Seconds())
 		return nil
 	})
 }
 
 // Median request latency over a handful of identical embed calls.
-func runEmbedBench(ctx context.Context, spec *modelSpec, eng *engineSpec, runs int) error {
+func runEmbedBench(ctx context.Context, spec *catalog.Spec, eng *catalog.EngineSpec, runs int) error {
 	const probe = "The quick brown fox jumps over the lazy dog."
 	return withServer(ctx, spec, eng, func(url, key string) error {
 		var lat []float64
 		for i := 0; i < runs; i++ {
 			started := time.Now()
-			if _, err := embedOnce(ctx, url, key, spec.id, probe); err != nil {
+			if _, err := embedOnce(ctx, url, key, spec.ID, probe); err != nil {
 				return err
 			}
 			ms := float64(time.Since(started)) / float64(time.Millisecond)
 			lat = append(lat, ms)
-			fmt.Printf("  %s %.0f ms\n", dim(fmt.Sprintf("run %d", i+1)), ms)
+			fmt.Printf("  %s %.0f ms\n", ui.Dim(fmt.Sprintf("run %d", i+1)), ms)
 		}
 		sort.Float64s(lat)
-		fmt.Printf("%s %s — median %.0f ms over %d requests\n", green("✓"), bold(spec.id), lat[len(lat)/2], len(lat))
+		fmt.Printf("%s %s — median %.0f ms over %d requests\n", ui.Green("✓"), ui.Bold(spec.ID), lat[len(lat)/2], len(lat))
 		return nil
 	})
 }

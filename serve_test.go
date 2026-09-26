@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 )
@@ -33,7 +34,7 @@ func TestServedIDsOpenAIShape(t *testing.T) {
 func TestServedIDsKevShape(t *testing.T) {
 	server, client := servedIDsServer(t, `{"models":[{"id":"kev-latest","aliases":["jev-latest"]}]}`)
 	ids := servedIDs(client, server.URL, "")
-	if len(ids) != 2 || !contains(ids, "kev-latest") || !contains(ids, "jev-latest") {
+	if len(ids) != 2 || !slices.Contains(ids, "kev-latest") || !slices.Contains(ids, "jev-latest") {
 		t.Fatalf("servedIDs returned %v", ids)
 	}
 }

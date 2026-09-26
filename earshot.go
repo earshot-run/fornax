@@ -13,7 +13,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
+
+	"github.com/earshot-run/fornax/internal/ui"
 )
 
 type localConnection struct {
@@ -107,10 +110,19 @@ func connectEarshot(url, apiKey string) (connectResult, string) {
 // other OpenAI-compatible client.
 func pasteBlock(url, apiKey, model string) string {
 	return fmt.Sprintf("    %s\n      %s %s\n      %s %s\n      %s %s",
-		dim("earshot → Settings → Local models → connect a server"),
-		dim("url:"), url,
-		dim("key:"), apiKey,
-		dim("model:"), model)
+		ui.Dim("earshot → Settings → Local models → connect a server"),
+		ui.Dim("url:"), url,
+		ui.Dim("key:"), apiKey,
+		ui.Dim("model:"), model)
+}
+
+// llama-server also answers Anthropic's /v1/messages — the same key goes in
+// x-api-key. The env-var pair is what Claude-flavored clients read.
+func anthropicLine(url, apiKey string) string {
+	return fmt.Sprintf("    %s %s %s",
+		ui.Dim("anthropic →"),
+		ui.Dim("ANTHROPIC_BASE_URL="+strings.TrimSuffix(url, "/v1")),
+		ui.Dim("ANTHROPIC_API_KEY="+apiKey))
 }
 
 func earshotPresent() bool {
@@ -126,12 +138,12 @@ func reportConnect(url, apiKey, model string) {
 	result, detail := connectEarshot(url, apiKey)
 	switch result {
 	case connectRegistered:
-		fmt.Printf("    %s connected — pick %s in the agent's model list\n", green("earshot:"), bold("'"+model+"'"))
+		fmt.Printf("    %s connected — pick %s in the agent's model list\n", ui.Green("earshot:"), ui.Bold("'"+model+"'"))
 	case connectUnavailable:
-		fmt.Printf("    %s daemon would not connect (%s)\n", yellow("earshot:"), dim(detail))
+		fmt.Printf("    %s daemon would not connect (%s)\n", ui.Yellow("earshot:"), ui.Dim(detail))
 		fmt.Println(pasteBlock(url, apiKey, model))
 	case connectNoDaemon:
-		fmt.Printf("    %s no daemon found on this computer\n", dim("earshot:"))
+		fmt.Printf("    %s no daemon found on this computer\n", ui.Dim("earshot:"))
 		fmt.Println(pasteBlock(url, apiKey, model))
 	}
 }

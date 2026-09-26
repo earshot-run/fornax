@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/earshot-run/fornax/internal/catalog"
 )
 
 func TestAppleText(t *testing.T) {
@@ -29,7 +31,7 @@ func TestAppleText(t *testing.T) {
 }
 
 func TestAppleMuxAuth(t *testing.T) {
-	s := &appleServer{spec: &modelSpec{id: "apple-fm"}, key: "test-key"}
+	s := &appleServer{spec: &catalog.Spec{ID: "apple-fm"}, key: "test-key"}
 	mux := s.mux()
 
 	denied := httptest.NewRecorder()

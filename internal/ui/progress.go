@@ -1,16 +1,19 @@
-package main
+package ui
 
 // Download progress. On a terminal: one animated line with a bar, rate and
 // ETA. Off a terminal: a handful of plain milestone lines so logs stay clean.
+// With --events on, neither: one JSON progress line for the supervisor.
 
 import (
 	"fmt"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/earshot-run/fornax/internal/events"
 )
 
-type progressBar struct {
+type Progress struct {
 	label   string
 	total   int64
 	started time.Time
@@ -18,22 +21,22 @@ type progressBar struct {
 	next    int64 // next non-tty milestone
 }
 
-func newProgress(label string, total int64) *progressBar {
-	return &progressBar{label: label, total: total, started: time.Now(), next: total / 4}
+func NewProgress(label string, total int64) *Progress {
+	return &Progress{label: label, total: total, started: time.Now(), next: total / 4}
 }
 
-func (p *progressBar) set(done int64) {
+func (p *Progress) Set(done int64) {
 	now := time.Now()
-	if events != nil {
-		if done >= p.total || now.Sub(p.last) >= progressEvery {
+	if events.On() {
+		if done >= p.total || now.Sub(p.last) >= events.ProgressEvery {
 			p.last = now
-			emit("progress", map[string]any{"label": p.label, "done": done, "total": p.total})
+			events.Emit("progress", map[string]any{"label": p.label, "done": done, "total": p.total})
 		}
 		return
 	}
 	elapsed := now.Sub(p.started).Seconds()
 	if done >= p.total && elapsed < 1 {
-		fmt.Fprintf(os.Stderr, "\r\x1b[K%s %6s — done\n", p.label, humanSize(done))
+		fmt.Fprintf(os.Stderr, "\r\x1b[K%s %6s — done\n", p.label, HumanSize(done))
 		return
 	}
 	if !ansiOn {
@@ -41,7 +44,7 @@ func (p *progressBar) set(done int64) {
 		if done >= p.total || done >= p.next {
 			p.next = done + p.total/marks
 			fmt.Fprintf(os.Stderr, "%s %d%% (%s of %s)\n",
-				p.label, done*100/max64(p.total, 1), humanSize(done), humanSize(p.total))
+				p.label, done*100/max(p.total, 1), HumanSize(done), HumanSize(p.total))
 		}
 		return
 	}
@@ -54,26 +57,19 @@ func (p *progressBar) set(done int64) {
 	if p.total > 0 {
 		fill = int64(width) * done / p.total
 	}
-	bar := strings.Repeat("█", int(fill)) + dim(strings.Repeat("░", width-int(fill)))
+	rendered := strings.Repeat("█", int(fill)) + Dim(strings.Repeat("░", width-int(fill)))
 	var rate float64
 	if elapsed > 0 {
 		rate = float64(done) / elapsed
 	}
-	eta := dim("  ?")
+	eta := Dim("  ?")
 	if rate > 0 && done < p.total {
 		eta = fmt.Sprintf("%4ds", int(float64(p.total-done)/rate))
 	}
 	fmt.Fprintf(os.Stderr, "\r\x1b[K%s %s %3d%% %s/%s %s/s %s",
-		bold(p.label), bar, done*100/max64(p.total, 1),
-		humanSize(done), humanSize(p.total), humanSize(int64(rate)), eta)
+		Bold(p.label), rendered, done*100/max(p.total, 1),
+		HumanSize(done), HumanSize(p.total), HumanSize(int64(rate)), eta)
 	if done >= p.total {
 		fmt.Fprintln(os.Stderr)
 	}
-}
-
-func max64(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
 }

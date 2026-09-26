@@ -7,13 +7,23 @@ package main
 import (
 	"fmt"
 	"strings"
+
+	"github.com/earshot-run/fornax/internal/paths"
 )
 
-// Every subcommand — keep in sync with the switch in main.go.
-const completionCommands = "list pull rm clean doctor ask chat see hear say draw embed compare test bench judge run ps connect show talk record search version upgrade mcp rerank completion"
+// Every subcommand, straight from the dispatch table — hidden helpers stay out.
+func completionCommands() string {
+	var names []string
+	for _, command := range commands() {
+		if !strings.HasPrefix(command.name, "__") {
+			names = append(names, command.name)
+		}
+	}
+	return strings.Join(names, " ")
+}
 
 // Subcommands whose first positional argument is a model id.
-const completionModelCommands = "pull rm ask chat see hear say draw embed compare test bench judge run connect show talk record rerank"
+const completionModelCommands = "pull rm ask chat see hear say imagine animate embed compare test bench judge run connect show talk record rerank"
 
 const zshCompletion = `#compdef fornax
 # fornax completion for zsh — eval "$(fornax completion zsh)", or save to a
@@ -98,7 +108,7 @@ func cmdCompletion(args []string) error {
 		return fmt.Errorf("usage: fornax completion <zsh|bash|fish>")
 	}
 	script = strings.NewReplacer(
-		"@COMMANDS@", completionCommands,
+		"@COMMANDS@", completionCommands(),
 		"@MODELS@", completionModelCommands,
 		"@MODELS_ALT@", strings.ReplaceAll(completionModelCommands, " ", "|"),
 	).Replace(script)
@@ -110,8 +120,8 @@ func cmdCompletion(args []string) error {
 // line. Wired in main.go as `__complete_models`; a failure just yields no
 // completions.
 func cmdCompleteModels() error {
-	for _, spec := range allSpecs(home()) {
-		fmt.Println(spec.id)
+	for _, spec := range allSpecs(paths.Home()) {
+		fmt.Println(spec.ID)
 	}
 	return nil
 }

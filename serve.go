@@ -1,12 +1,13 @@
 package main
 
-// Pulling weights and running `llama-server` in the foreground: spawn with a
-// scrubbed environment, prove `/health` and `/v1/models`, then babysit until
-// Ctrl-C or the child exits.
+// `run` and `connect`: pulling weights and running `llama-server` in the
+// foreground — spawn with a scrubbed environment, prove `/health` and
+// `/v1/models`, then babysit until Ctrl-C or the child exits.
 
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -15,75 +16,84 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
+	"strings"
 	"time"
+
+	"github.com/earshot-run/fornax/internal/catalog"
+	"github.com/earshot-run/fornax/internal/download"
+	"github.com/earshot-run/fornax/internal/engine"
+	"github.com/earshot-run/fornax/internal/events"
+	"github.com/earshot-run/fornax/internal/openai"
+	"github.com/earshot-run/fornax/internal/paths"
+	"github.com/earshot-run/fornax/internal/ui"
 )
 
 const (
 	loadTimeout = 15 * time.Minute
 	readyPoll   = 500 * time.Millisecond
-	maxHTTPBody = 2 * 1024 * 1024
 )
 
 // Download every artifact a model needs, verify each, promote into place.
 // Resumable: a `.part` keeps its bytes between runs.
-func ensureModel(ctx context.Context, root string, spec *modelSpec, progress func(int64)) error {
-	if spec.rt == runtimeKev {
+func ensureModel(ctx context.Context, root string, spec *catalog.Spec, progress func(int64)) error {
+	if spec.Runtime == catalog.Kev {
 		return ensureKevModel(ctx, root, spec, progress)
 	}
-	if spec.rt == runtimeApple {
+	if spec.Runtime == catalog.Apple {
 		return ensureAppleModel(ctx, root, spec)
 	}
-	for _, pin := range spec.files() {
+	for _, pin := range spec.Files() {
 		installed := fileInstalled(root, spec, pin)
 		if installed {
-			progress(pin.bytes)
+			progress(pin.Bytes)
 			continue
 		}
 		part, err := prepareCandidate(root, spec, pin)
 		if err != nil {
 			return err
 		}
-		if err := fetch(ctx, spec.url(pin), pin.bytes, part, progress); err != nil {
+		if err := download.Fetch(ctx, spec.URL(pin), pin.Bytes, part, progress); err != nil {
 			return err
 		}
-		if err := verify(part, pin.bytes, pin.sha256); err != nil {
+		if err := download.Verify(part, pin.Bytes, pin.SHA256); err != nil {
 			return err
 		}
 		if err := promote(root, spec, pin, part); err != nil {
 			return err
 		}
 	}
-	return writeReceipt(modelDir(root, spec), spec)
+	return paths.WriteReceipt(paths.ModelDir(root, spec), spec)
 }
 
-func fileInstalled(root string, spec *modelSpec, pin *filePin) bool {
-	info, err := os.Stat(filePath(root, spec, pin))
-	return err == nil && info.Size() == pin.bytes
+func fileInstalled(root string, spec *catalog.Spec, pin *catalog.Pin) bool {
+	info, err := os.Stat(paths.FilePath(root, spec, pin))
+	return err == nil && info.Size() == pin.Bytes
 }
 
-func prepareCandidate(root string, spec *modelSpec, pin *filePin) (string, error) {
-	dir := modelDir(root, spec)
-	if err := protectDir(dir); err != nil {
+func prepareCandidate(root string, spec *catalog.Spec, pin *catalog.Pin) (string, error) {
+	// Pins can name nested paths (laya's tokenizer/, encoder/ dirs).
+	if err := paths.ProtectDir(filepath.Dir(paths.PartPath(root, spec, pin))); err != nil {
 		return "", err
 	}
-	part := partPath(root, spec, pin)
-	final := filePath(root, spec, pin)
+	part := paths.PartPath(root, spec, pin)
+	final := paths.FilePath(root, spec, pin)
 	// A verified-but-unpromoted file from an earlier crash resumes as a part.
 	if _, err := os.Stat(part); os.IsNotExist(err) {
-		if info, err := os.Stat(final); err == nil && info.Size() == pin.bytes {
+		if info, err := os.Stat(final); err == nil && info.Size() == pin.Bytes {
 			if err := os.Rename(final, part); err != nil {
 				return "", fmt.Errorf("could not resume model verification: %w", err)
 			}
 		}
 	}
-	if info, err := os.Stat(part); err == nil && info.Size() > pin.bytes {
+	if info, err := os.Stat(part); err == nil && info.Size() > pin.Bytes {
 		os.Remove(part)
 	}
 	return part, nil
 }
 
-func promote(root string, spec *modelSpec, pin *filePin, part string) error {
-	final := filePath(root, spec, pin)
+func promote(root string, spec *catalog.Spec, pin *catalog.Pin, part string) error {
+	final := paths.FilePath(root, spec, pin)
 	os.Remove(final)
 	if err := os.Rename(part, final); err != nil {
 		return fmt.Errorf("could not install model: %w", err)
@@ -93,33 +103,33 @@ func promote(root string, spec *modelSpec, pin *filePin, part string) error {
 
 // The kev checkpoint: fetch the verified tarball, keep it (re-hash before
 // every spawn reads it), unpack the kev-<name>/ dir it contains.
-func ensureKevModel(ctx context.Context, root string, spec *modelSpec, progress func(int64)) error {
-	pin := &spec.model
+func ensureKevModel(ctx context.Context, root string, spec *catalog.Spec, progress func(int64)) error {
+	pin := &spec.Model
 	if !fileInstalled(root, spec, pin) {
 		part, err := prepareCandidate(root, spec, pin)
 		if err != nil {
 			return err
 		}
-		if err := fetch(ctx, spec.url(pin), pin.bytes, part, progress); err != nil {
+		if err := download.Fetch(ctx, spec.URL(pin), pin.Bytes, part, progress); err != nil {
 			return err
 		}
-		if err := verify(part, pin.bytes, pin.sha256); err != nil {
+		if err := download.Verify(part, pin.Bytes, pin.SHA256); err != nil {
 			return err
 		}
 		if err := promote(root, spec, pin, part); err != nil {
 			return err
 		}
 	}
-	progress(pin.bytes)
+	progress(pin.Bytes)
 	if kevCkptDir(root, spec) != "" {
-		return writeReceipt(modelDir(root, spec), spec)
+		return paths.WriteReceipt(paths.ModelDir(root, spec), spec)
 	}
 	staging, err := os.MkdirTemp(root, ".ckpt-")
 	if err != nil {
 		return fmt.Errorf("could not stage the checkpoint: %w", err)
 	}
 	defer os.RemoveAll(staging)
-	if err := unpackTarGz(filePath(root, spec, pin), staging); err != nil {
+	if err := engine.UnpackTarGz(paths.FilePath(root, spec, pin), staging); err != nil {
 		return err
 	}
 	entries, err := os.ReadDir(staging)
@@ -129,57 +139,71 @@ func ensureKevModel(ctx context.Context, root string, spec *modelSpec, progress 
 	if _, err := os.Stat(filepath.Join(staging, entries[0].Name(), "head.pt")); err != nil {
 		return fmt.Errorf("the kev checkpoint archive is missing head.pt")
 	}
-	dest := filepath.Join(modelDir(root, spec), entries[0].Name())
+	dest := filepath.Join(paths.ModelDir(root, spec), entries[0].Name())
 	os.RemoveAll(dest)
 	if err := os.Rename(filepath.Join(staging, entries[0].Name()), dest); err != nil {
 		return fmt.Errorf("could not install the checkpoint: %w", err)
 	}
-	return writeReceipt(modelDir(root, spec), spec)
+	return paths.WriteReceipt(paths.ModelDir(root, spec), spec)
 }
 
 // Re-hash every pinned file before each spawn: the install receipt cannot
 // authorize bytes that may have changed since.
-func rehash(root string, spec *modelSpec) error {
-	for _, pin := range spec.files() {
-		if err := verify(filePath(root, spec, pin), pin.bytes, pin.sha256); err != nil {
+func rehash(root string, spec *catalog.Spec) error {
+	for _, pin := range spec.Files() {
+		if err := download.Verify(paths.FilePath(root, spec, pin), pin.Bytes, pin.SHA256); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+// What every child process fornax starts runs with. Never inherit
+// LLAMA_ARG_*, provider credentials, preload variables, or DYLD injection
+// from the caller.
+func scrubbedEnv(root string) []string {
+	env := []string{
+		"HOME=" + filepath.Join(root, "server-home"),
+		"PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+	}
+	if tmp := os.Getenv("TMPDIR"); tmp != "" {
+		env = append(env, "TMPDIR="+tmp)
+	}
+	return env
+}
+
 // logPath "" inherits the terminal (the `run` case); a path redirects the
 // server's chatter to a file so one-shot commands keep stdout clean.
-func spawnServer(root string, eng *engineSpec, spec *modelSpec, port int, ctxSize int, logPath string) (*exec.Cmd, error) {
-	binary := engineBinary(root, eng, eng.binary)
+func spawnServer(root string, eng *catalog.EngineSpec, spec *catalog.Spec, port int, ctxSize int, logPath string) (*exec.Cmd, error) {
+	binary := paths.EngineBinary(root, eng, eng.Binary)
 	args := []string{
-		"--model", modelFinal(root, spec),
-		"--alias", spec.id,
+		"--model", paths.ModelFinal(root, spec),
+		"--alias", spec.ID,
 		"--host", "127.0.0.1",
 		"--port", fmt.Sprintf("%d", port),
 		"--ctx-size", fmt.Sprintf("%d", ctxSize),
 		"--parallel", "1",
 		"--jinja",
-		"--api-key-file", keyPath(root),
+		"--api-key-file", paths.KeyPath(root),
 		"--no-ui",
 		// Monotonic counters `run -idle` reads; behind the same key.
 		"--metrics",
 	}
-	if spec.mmproj != nil {
-		args = append(args, "--mmproj", filePath(root, spec, spec.mmproj))
+	if spec.MMProj != nil {
+		args = append(args, "--mmproj", paths.FilePath(root, spec, spec.MMProj))
 	}
-	if spec.kind == modalVision {
+	if spec.Kind == catalog.Vision {
 		// llama.cpp warns below 1024 on Qwen-VL grounding tasks.
 		args = append(args, "--image-min-tokens", "1024")
 	}
-	if spec.kind == modalText {
+	if spec.Kind == catalog.Text {
 		// Qwen3 emits thinking traces unless reasoning is off.
 		args = append(args, "--reasoning", "off")
 	}
-	if spec.kind == modalEmbed {
+	if spec.Kind == catalog.Embed {
 		args = append(args, "--embeddings")
 	}
-	if spec.kind == modalRerank {
+	if spec.Kind == catalog.Rerank {
 		args = append(args, "--reranking")
 	}
 	if runtime.GOOS != "windows" {
@@ -188,15 +212,7 @@ func spawnServer(root string, eng *engineSpec, spec *modelSpec, port int, ctxSiz
 	}
 	cmd := exec.Command(binary, args...)
 	cmd.Dir = filepath.Dir(binary)
-	// Never inherit LLAMA_ARG_*, provider credentials, preload variables,
-	// or DYLD injection from the caller.
-	cmd.Env = []string{
-		"HOME=" + filepath.Join(root, "server-home"),
-		"PATH=/usr/bin:/bin:/usr/sbin:/sbin",
-	}
-	if tmp := os.Getenv("TMPDIR"); tmp != "" {
-		cmd.Env = append(cmd.Env, "TMPDIR="+tmp)
-	}
+	cmd.Env = scrubbedEnv(root)
 	cmd.Stdin = nil
 	if logPath != "" {
 		log, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
@@ -241,7 +257,7 @@ func waitReady(ctx context.Context, exited <-chan error, port int, alias, key st
 				healthy = health["status"] == "ok"
 			}
 		}
-		listed := contains(servedIDs(client, fmt.Sprintf("http://127.0.0.1:%d", port), key), alias)
+		listed := slices.Contains(servedIDs(client, fmt.Sprintf("http://127.0.0.1:%d", port), key), alias)
 		if healthy && listed {
 			return nil
 		}
@@ -264,7 +280,7 @@ func servedIDs(client *http.Client, base, key string) []string {
 	}
 	var ids []string
 	add := func(s string) {
-		if s != "" && !contains(ids, s) {
+		if s != "" && !slices.Contains(ids, s) {
 			ids = append(ids, s)
 		}
 	}
@@ -309,7 +325,7 @@ func authenticatedGet(client *http.Client, url, key string) map[string]any {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxHTTPBody))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, openai.MaxBody))
 	if err != nil {
 		return nil
 	}
@@ -318,6 +334,16 @@ func authenticatedGet(client *http.Client, url, key string) map[string]any {
 		return nil
 	}
 	return value
+}
+
+// Whether the server on this model's own port is advertising it. kev answers
+// under its family alias and without a key.
+func isServing(spec *catalog.Spec, key string) bool {
+	alias := spec.ID
+	if spec.Runtime == catalog.Kev {
+		alias, key = kevAlias, ""
+	}
+	return slices.Contains(servedModels(spec.Port, key), alias)
 }
 
 // What the running server advertises, or nil when it is not up (or the key
@@ -348,4 +374,282 @@ func freePort(base int) (int, error) {
 		}
 	}
 	return 0, fmt.Errorf("no free loopback port near %d", base)
+}
+
+// run and connect both need a model with an OpenAI-compatible server behind it.
+func requireServer(spec *catalog.Spec) error {
+	if spec.Runtime != catalog.SD && spec.Kind != catalog.Speech {
+		return nil
+	}
+	does, command, operands := instead(spec)
+	return fmt.Errorf("%s %s, it does not serve — `fornax %s %s %s`", spec.ID, does, command, spec.ID, operands)
+}
+
+func cmdRun(ctx context.Context, args []string) error {
+	set := flag.NewFlagSet("run", flag.ExitOnError)
+	port := set.Int("port", 0, "loopback port to serve on (default: the model's assigned port)")
+	ctxSize := set.Int("ctx-size", catalog.ContextWindow, "context window passed to llama-server")
+	noConnect := set.Bool("no-connect", false, "do not register the running server with Earshot")
+	idle := set.Duration("idle", 0, "stop after this long without a request, e.g. 20m (default: never)")
+	asEvents := set.Bool("events", false, "one JSON event per line on stdout; stops when the reader goes away")
+	set.Usage = ui.UsageFunc(set, "usage: fornax run <model> [-port N] [-ctx-size N] [-idle 20m] [-no-connect] [--events]")
+	got := parseFlexible(set, args, 1)
+	if len(got) != 1 {
+		return fmt.Errorf("usage: fornax run <model> [-port N] [-ctx-size N] [-idle 20m] [-no-connect] [--events]")
+	}
+	id := got[0]
+	if *asEvents {
+		events.Enable()
+	}
+	err := serveModel(ctx, id, *port, *ctxSize, *noConnect, *idle)
+	if err != nil {
+		events.Emit("error", map[string]any{"message": err.Error()})
+	}
+	return err
+}
+
+func serveModel(ctx context.Context, id string, port, ctxSize int, noConnect bool, idle time.Duration) error {
+	spec, eng, err := resolve(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := requireServer(spec); err != nil {
+		return err
+	}
+	servePort := spec.Port
+	if port != 0 {
+		servePort = port
+	}
+	root := paths.Home()
+	if err := pull(ctx, spec, eng); err != nil {
+		return err
+	}
+	if spec.Runtime == catalog.Apple {
+		return runApple(ctx, root, spec, servePort, ctxSize != catalog.ContextWindow, noConnect, idle)
+	}
+	events.Emit("stage", map[string]any{"stage": "verifying", "model": spec.ID})
+	verifying := ui.Spin("verifying " + spec.ID)
+	if err := rehash(root, spec); err != nil {
+		verifying.Stop("")
+		return err
+	}
+	verifying.Stop("")
+	if err := portFree(servePort); err != nil {
+		return err
+	}
+	var cmd *exec.Cmd
+	var key string
+	serverName := "llama-server"
+	logPath := ""
+	if events.On() {
+		logPath = paths.ServerLog(root)
+	}
+	events.Emit("stage", map[string]any{"stage": "loading", "model": spec.ID})
+	switch spec.Runtime {
+	case catalog.Kev, catalog.Laya:
+		if spec.Runtime == catalog.Kev {
+			serverName = "kev.serve"
+		} else {
+			serverName = "laya"
+		}
+		if ctxSize != catalog.ContextWindow {
+			fmt.Fprintf(os.Stderr, "note: -ctx-size is ignored for %s models\n", spec.Runtime)
+		}
+		if noConnect {
+			fmt.Fprintf(os.Stderr, "note: -no-connect is ignored for %s models (no Earshot route)\n", spec.Runtime)
+		}
+		if idle > 0 {
+			fmt.Fprintf(os.Stderr, "note: -idle is ignored for %s models (no activity counters)\n", spec.Runtime)
+			idle = 0
+		}
+		if spec.Runtime == catalog.Kev {
+			cmd, err = spawnKev(root, spec, servePort, logPath)
+		} else {
+			key, err = paths.EnsureKey(root)
+			if err == nil {
+				cmd, err = spawnLaya(root, spec, servePort, logPath)
+			}
+		}
+	default:
+		key, err = paths.EnsureKey(root)
+		if err != nil {
+			return err
+		}
+		cmd, err = spawnServer(root, eng, spec, servePort, ctxSize, logPath)
+	}
+	if err != nil {
+		return err
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+	if spec.Runtime == catalog.Kev {
+		err = waitReady(ctx, exited, servePort, kevAlias, "", false)
+	} else {
+		err = waitReady(ctx, exited, servePort, spec.ID, key, true)
+	}
+	if err != nil {
+		killAndReap(cmd, exited)
+		return err
+	}
+	probe := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{Proxy: nil}}
+	return holdServing(ctx, &serving{
+		spec: spec, port: servePort, key: key, noConnect: noConnect, idle: idle,
+		process: serverName, exited: exited, stop: func() { killAndReap(cmd, exited) },
+		sample: func() (string, bool) { return metricsFingerprint(probe, servePort, key) },
+	})
+}
+
+func holdServing(ctx context.Context, s *serving) error {
+	url := paths.EndpointURL(s.port)
+	if events.On() {
+		earshot, detail := "skipped", ""
+		if s.spec.Kind != catalog.Decision && !s.noConnect {
+			var result connectResult
+			switch result, detail = connectEarshot(url, s.key); result {
+			case connectRegistered:
+				earshot = "connected"
+			case connectUnavailable:
+				earshot = "refused"
+			default:
+				earshot = "absent"
+			}
+		}
+		events.Emit("ready", map[string]any{"model": s.spec.ID, "url": url, "port": s.port, "earshot": earshot, "detail": detail})
+	} else {
+		fmt.Printf("\n%s %s\n", ui.MarkOK(), ui.Bold(s.spec.Name)+" is serving")
+		fmt.Printf("    %s %s\n", ui.Dim("url:"), ui.Cyan(url))
+		switch {
+		case s.spec.Runtime == catalog.Kev:
+			fmt.Println(kevBlock(url))
+		case s.spec.Runtime == catalog.Laya:
+			fmt.Println(layaBlock(url, s.spec.ID, s.key))
+		case s.noConnect:
+			fmt.Println(pasteBlock(url, s.key, s.spec.ID))
+		default:
+			reportConnect(url, s.key, s.spec.ID)
+		}
+		if s.spec.Runtime == catalog.Llama && s.spec.Kind != catalog.Embed && s.spec.Kind != catalog.Rerank {
+			fmt.Println(anthropicLine(url, s.key))
+		}
+		if s.idle > 0 {
+			fmt.Println(ui.Dim(fmt.Sprintf("\nstops after %s without a request · ctrl-c to stop now", s.idle)))
+		} else {
+			fmt.Println(ui.Dim("\nctrl-c to stop"))
+		}
+	}
+	done := make(chan struct{})
+	defer close(done)
+	go events.Heartbeat(done)
+	select {
+	case <-ctx.Done():
+		fmt.Fprintln(os.Stderr, ui.Dim("stopping…"))
+		s.stop()
+		events.Emit("stopped", map[string]any{"model": s.spec.ID, "reason": "signal"})
+		return nil
+	case <-events.SupervisorGone():
+		s.stop()
+		return nil
+	case <-idleAfter(s.idle, idlePoll, s.sample, done):
+		fmt.Fprintln(os.Stderr, ui.Dim(fmt.Sprintf("no requests for %s — stopping", s.idle)))
+		s.stop()
+		events.Emit("stopped", map[string]any{"model": s.spec.ID, "reason": "idle"})
+		return nil
+	case status := <-s.exited:
+		s.stop()
+		return fmt.Errorf("%s exited: %v", s.process, status)
+	}
+}
+
+func killAndReap(cmd *exec.Cmd, exited <-chan error) {
+	cmd.Process.Kill()
+	select {
+	case <-exited:
+	case <-time.After(5 * time.Second):
+	}
+}
+
+func cmdConnect(args []string) error {
+	set := flag.NewFlagSet("connect", flag.ExitOnError)
+	port := set.Int("port", 0, "loopback port the model is served on (default: the model's assigned port)")
+	set.Usage = ui.UsageFunc(set, "usage: fornax connect <model> [-port N]")
+	var id string
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		id, args = args[0], args[1:]
+	}
+	set.Parse(args)
+	if id == "" {
+		if set.NArg() == 1 {
+			id = set.Arg(0)
+		} else {
+			return fmt.Errorf("usage: fornax connect <model> [-port N]")
+		}
+	} else if set.NArg() > 0 {
+		return fmt.Errorf("usage: fornax connect <model> [-port N]")
+	}
+	spec := model(id)
+	if spec == nil {
+		return unknownModel(id)
+	}
+	if err := requireServer(spec); err != nil {
+		return err
+	}
+	servePort := spec.Port
+	if *port != 0 {
+		servePort = *port
+	}
+	if spec.Runtime == catalog.Kev {
+		if slices.Contains(servedModels(servePort, ""), kevAlias) {
+			fmt.Println(kevBlock(paths.EndpointURL(servePort)))
+			return nil
+		}
+		return fmt.Errorf("nothing is answering on 127.0.0.1:%d — is `%s` running?", servePort, spec.ID)
+	}
+	root := paths.Home()
+	cfg, err := paths.LoadConfig(root)
+	if err != nil {
+		return err
+	}
+	if cfg.APIKey == "" {
+		return fmt.Errorf("no server key yet — run `fornax run %s` once first", spec.ID)
+	}
+	if spec.Runtime == catalog.Laya {
+		// Decision models have no Earshot route — print the SDK block.
+		if slices.Contains(servedModels(servePort, cfg.APIKey), spec.ID) {
+			fmt.Println(layaBlock(paths.EndpointURL(servePort), spec.ID, cfg.APIKey))
+			return nil
+		}
+		return fmt.Errorf("nothing is answering on 127.0.0.1:%d — is `%s` running?", servePort, spec.ID)
+	}
+	served := servedModels(servePort, cfg.APIKey)
+	switch {
+	case served == nil:
+		return fmt.Errorf("nothing is answering on 127.0.0.1:%d — is `%s` running?", servePort, spec.ID)
+	case !slices.Contains(served, spec.ID):
+		return fmt.Errorf("127.0.0.1:%d serves [%s], not %s", servePort, strings.Join(served, ", "), spec.ID)
+	}
+	url := paths.EndpointURL(servePort)
+	result, detail := connectEarshot(url, cfg.APIKey)
+	switch result {
+	case connectRegistered:
+		fmt.Printf("%s %s connected — %s is in Settings ▸ Local models\n", ui.MarkOK(), ui.Green("earshot:"), ui.Bold(spec.ID))
+		return nil
+	case connectUnavailable:
+		fmt.Println(pasteBlock(url, cfg.APIKey, spec.ID))
+		return fmt.Errorf("earshot would not connect: %s", detail)
+	default:
+		return fmt.Errorf("no Earshot daemon on this computer\n%s", pasteBlock(url, cfg.APIKey, spec.ID))
+	}
+}
+
+// A model that is up: announce it, then hold until something ends it.
+type serving struct {
+	spec      *catalog.Spec
+	port      int
+	key       string
+	noConnect bool
+	idle      time.Duration
+	process   string
+	exited    <-chan error
+	stop      func()
+	sample    func() (string, bool)
 }

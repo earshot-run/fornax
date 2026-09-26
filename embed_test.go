@@ -17,11 +17,15 @@ func TestEmbedLive(t *testing.T) {
 		t.Skip("set FORNAX_LIVE=1 to pull nomic-embed and spawn a real server")
 	}
 	ctx := context.Background()
+	spec, _, err := resolve(ctx, "hf:nomic-ai/nomic-embed-text-v1.5-GGUF")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	old := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
-	err := cmdEmbed(ctx, []string{"nomic-embed", "hello world"})
+	err = cmdEmbed(ctx, []string{spec.ID, "hello world"})
 	w.Close()
 	os.Stdout = old
 	out, _ := io.ReadAll(r)
@@ -36,7 +40,7 @@ func TestEmbedLive(t *testing.T) {
 	if err := json.Unmarshal(bytes.TrimSpace(out), &parsed); err != nil {
 		t.Fatalf("stdout is not clean JSON: %v\n%s", err, out)
 	}
-	if parsed.Model != "nomic-embed" {
+	if parsed.Model != spec.ID {
 		t.Fatalf("model = %q", parsed.Model)
 	}
 	if parsed.Dimensions != 768 || len(parsed.Embedding) != 768 {
@@ -50,7 +54,7 @@ func TestEmbedTestBenchLive(t *testing.T) {
 		t.Skip("set FORNAX_LIVE=1 to pull nomic-embed and spawn a real server")
 	}
 	ctx := context.Background()
-	spec, eng, err := resolve("nomic-embed")
+	spec, eng, err := resolve(ctx, "hf:nomic-ai/nomic-embed-text-v1.5-GGUF")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +72,7 @@ func TestAskEmbedLive(t *testing.T) {
 	if os.Getenv("FORNAX_LIVE") == "" {
 		t.Skip("set FORNAX_LIVE=1 to pull nomic-embed and spawn a real server")
 	}
-	err := cmdAsk(context.Background(), []string{"nomic-embed", "hi"})
+	err := cmdAsk(context.Background(), []string{"hf:nomic-ai/nomic-embed-text-v1.5-GGUF", "hi"})
 	t.Logf("cmdAsk(nomic-embed) → %v", err)
 	if err == nil {
 		t.Fatal("ask on an embed model should fail")

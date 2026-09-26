@@ -51,10 +51,10 @@ func fakeRelease(t *testing.T, asset string, payload []byte, corrupt bool) (*ghR
 		}
 	}))
 	rel := &ghRelease{TagName: "v9.9.9"}
-	rel.Assets = []struct {
-		Name string `json:"name"`
-		URL  string `json:"browser_download_url"`
-	}{{asset, srv.URL + "/" + asset}, {"sha256sums.txt", srv.URL + "/sha256sums.txt"}}
+	rel.Assets = []ghAsset{
+		{Name: asset, URL: srv.URL + "/" + asset},
+		{Name: "sha256sums.txt", URL: srv.URL + "/sha256sums.txt"},
+	}
 	return rel, srv
 }
 

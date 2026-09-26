@@ -15,6 +15,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/earshot-run/fornax/internal/openai"
+	"github.com/earshot-run/fornax/internal/ui"
 )
 
 const hfSearchLimit = 10
@@ -70,7 +73,7 @@ func cmdSearch(ctx context.Context, args []string) error {
 		return fmt.Errorf("huggingface.co answered HTTP %d for the model search", resp.StatusCode)
 	}
 	var hits []hfSearchHit
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxHTTPBody)).Decode(&hits); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, openai.MaxBody)).Decode(&hits); err != nil {
 		return fmt.Errorf("the search reply was not readable: %w", err)
 	}
 	sort.Slice(hits, func(i, j int) bool { return hits[i].Downloads > hits[j].Downloads })
@@ -81,7 +84,7 @@ func cmdSearch(ctx context.Context, args []string) error {
 		fmt.Printf("no GGUF repos matching %q\n", query)
 		return nil
 	}
-	fmt.Fprintf(os.Stderr, "%s\n", dim(fmt.Sprintf("%d GGUF repos for %q, by downloads", len(hits), query)))
+	fmt.Fprintf(os.Stderr, "%s\n", ui.Dim(fmt.Sprintf("%d GGUF repos for %q, by downloads", len(hits), query)))
 	width := 0
 	for i := range hits {
 		if len(hits[i].ID) > width {
@@ -91,20 +94,20 @@ func cmdSearch(ctx context.Context, args []string) error {
 	for i := range hits {
 		hit := &hits[i]
 		ggufs := hit.ggufFiles()
-		kind := dim("no .gguf files listed")
+		kind := ui.Dim("no .gguf files listed")
 		if n := len(ggufs); n > 0 {
 			kind = fmt.Sprintf("%d .gguf", n)
 		}
 		fmt.Printf("  %s %s %s\n",
-			cell(hit.ID, width, bold), cell(humanCount(hit.Downloads)+" ↓", 9, nil), kind)
+			ui.Cell(hit.ID, width, ui.Bold), ui.Cell(humanCount(hit.Downloads)+" ↓", 9, nil), kind)
 		switch len(ggufs) {
 		case 1:
-			fmt.Printf("  %s %s\n", cell("", width, nil),
-				green("fornax pull hf:"+hit.ID+"/"+ggufs[0]))
+			fmt.Printf("  %s %s\n", ui.Cell("", width, nil),
+				ui.Green("fornax pull hf:"+hit.ID+"/"+ggufs[0]))
 		case 0:
 		default:
-			fmt.Printf("  %s %s\n", cell("", width, nil),
-				dim("pick a file: huggingface.co/"+hit.ID+"/tree/main"))
+			fmt.Printf("  %s %s\n", ui.Cell("", width, nil),
+				ui.Dim("pick a file: huggingface.co/"+hit.ID+"/tree/main"))
 		}
 	}
 	return nil

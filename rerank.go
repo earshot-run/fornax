@@ -5,12 +5,6 @@ package main
 // stdout so scripts can pipe them; the doc text always comes from the input
 // since llama-server omits document.text unless asked.
 
-// NOTE for the integrator: the rerank endpoint is off by default —
-// spawnServer (serve.go) needs `--reranking` for spec.kind == modalRerank,
-// the way modalEmbed gets `--embeddings`. Verify against the pinned b11060
-// build whether `--reranking` alone suffices or `--pooling rank` is also
-// required (older llama.cpp wanted `--embedding --pooling rank`).
-
 import (
 	"bufio"
 	"context"
@@ -22,24 +16,11 @@ import (
 	"os"
 	"sort"
 	"strings"
-)
 
-func init() {
-	models = append(models, modelSpec{
-		id:      "qwen3-rerank-0.6b",
-		name:    "Qwen3 Reranker 0.6B",
-		summary: "Scores documents against a query — for retrieval ordering.",
-		kind:    modalRerank,
-		repo:    "ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF",
-		model: filePin{
-			file:     "qwen3-reranker-0.6b-q8_0.gguf",
-			revision: "a02f48bb4f057028298c21fa033da2b30d7742d5",
-			bytes:    639153184,
-			sha256:   "22c9979ce4fbcdc5acdc310c6641c32797eff1aa980b8f7a2db8a8ea23429a48",
-		},
-		port: 7364,
-	})
-}
+	"github.com/earshot-run/fornax/internal/catalog"
+	"github.com/earshot-run/fornax/internal/openai"
+	"github.com/earshot-run/fornax/internal/ui"
+)
 
 // One scored document, in the server's input indexing.
 type rerankHit struct {
@@ -49,34 +30,20 @@ type rerankHit struct {
 }
 
 // `fornax rerank <model> "query" <doc…>` — or docs piped on stdin, one per
-// line. Model and query are peeled off the front like cmdSay so flags can
-// sit between them and the docs.
+// line.
 func cmdRerank(ctx context.Context, args []string) error {
 	set := flag.NewFlagSet("rerank", flag.ExitOnError)
 	top := set.Int("n", 0, "keep only the top N matches")
 	usageLine := `usage: fornax rerank <model> "query" <doc…> [-n top]   (or pipe docs on stdin, one per line)`
-	set.Usage = func() { fmt.Fprintln(os.Stderr, usageLine) }
-	var id, query string
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		id, args = args[0], args[1:]
-	}
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		query, args = args[0], args[1:]
-	}
-	set.Parse(args)
-	docs := set.Args()
-	if id == "" && len(docs) > 0 {
-		id, docs = docs[0], docs[1:]
-	}
-	if query == "" && len(docs) > 0 {
-		query, docs = docs[0], docs[1:]
-	}
-	if id == "" || query == "" {
+	set.Usage = ui.UsageFunc(set, usageLine)
+	got := parseFlexible(set, args, 2)
+	if len(got) < 2 {
 		return fmt.Errorf("%s", usageLine)
 	}
-	if len(docs) == 0 && !isTTY(os.Stdin) {
+	id, query, docs := got[0], got[1], got[2:]
+	if len(docs) == 0 && !ui.IsTTY(os.Stdin) {
 		scanner := bufio.NewScanner(os.Stdin)
-		scanner.Buffer(make([]byte, 0, 64*1024), maxHTTPBody)
+		scanner.Buffer(make([]byte, 0, 64*1024), openai.MaxBody)
 		for scanner.Scan() {
 			if line := strings.TrimSpace(scanner.Text()); line != "" {
 				docs = append(docs, line)
@@ -89,22 +56,22 @@ func cmdRerank(ctx context.Context, args []string) error {
 	if len(docs) == 0 {
 		return fmt.Errorf("%s", usageLine)
 	}
-	spec, eng, err := resolve(id)
+	spec, eng, err := resolve(ctx, id)
 	if err != nil {
 		return err
 	}
-	if spec.kind != modalRerank {
-		return fmt.Errorf("%s does not rerank — pick a rerank model (`list`)", spec.id)
+	if spec.Kind != catalog.Rerank {
+		return fmt.Errorf("%s does not rerank — pick a rerank model (`list`)", spec.ID)
 	}
 	return withServer(ctx, spec, eng, func(url, key string) error {
-		hits, err := rerankOnce(ctx, url, key, spec.id, query, docs, *top)
+		hits, err := rerankOnce(ctx, url, key, spec.ID, query, docs, *top)
 		if err != nil {
 			return err
 		}
 		for _, hit := range hits {
 			fmt.Printf("%.3f  %s\n", hit.score, shortDoc(hit.text))
 		}
-		fmt.Fprintf(os.Stderr, "%s\n", dim(fmt.Sprintf("%d docs, best match #%d", len(docs), hits[0].index+1)))
+		fmt.Fprintf(os.Stderr, "%s\n", ui.Dim(fmt.Sprintf("%d docs, best match #%d", len(docs), hits[0].index+1)))
 		return nil
 	})
 }
@@ -122,13 +89,13 @@ func rerankOnce(ctx context.Context, url, key, model, query string, docs []strin
 		req["top_n"] = topN
 	}
 	body, _ := json.Marshal(req)
-	resp, err := post(ctx, url+"/rerank", key, body)
+	resp, err := openai.Post(ctx, url+"/rerank", key, body)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, apiError(resp)
+		return nil, openai.Error(resp)
 	}
 	var parsed struct {
 		Results []struct {
@@ -139,7 +106,7 @@ func rerankOnce(ctx context.Context, url, key, model, query string, docs []strin
 			} `json:"document"`
 		} `json:"results"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxHTTPBody)).Decode(&parsed); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, openai.MaxBody)).Decode(&parsed); err != nil {
 		return nil, fmt.Errorf("the reply was not readable: %w", err)
 	}
 	if len(parsed.Results) == 0 {
@@ -173,15 +140,15 @@ func shortDoc(doc string) string {
 }
 
 // A rerank model's `test` scores two unrelated docs — the cat should win.
-func runRerankTest(ctx context.Context, spec *modelSpec, eng *engineSpec) error {
+func runRerankTest(ctx context.Context, spec *catalog.Spec, eng *catalog.EngineSpec) error {
 	return withServer(ctx, spec, eng, func(url, key string) error {
-		hits, err := rerankOnce(ctx, url, key, spec.id,
+		hits, err := rerankOnce(ctx, url, key, spec.ID,
 			"what did the cat do",
 			[]string{"the cat sat", "quantum physics"}, 0)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("%s %s — best match scored %.2f\n", green("✓"), bold(spec.id), hits[0].score)
+		fmt.Printf("%s %s — best match scored %.2f\n", ui.Green("✓"), ui.Bold(spec.ID), hits[0].score)
 		return nil
 	})
 }

@@ -4,28 +4,30 @@
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 A workbench for local models: download, run, talk to, see with, listen with,
-draw, embed, benchmark and clean up — one command at a time, on any machine.
+imagine, embed, benchmark and clean up — one command at a time, on any machine.
 Connects to [Earshot](https://earshot.run) when it's there; fully useful
 when it isn't.
 
 ```sh
-fornax ask qwen3-4b "explain a doorbell in one sentence"
-fornax ask qwen3-4b --schema answer.json "where is the Eiffel Tower?"
-fornax see qwen3-vl-2b screenshot.png "what does this UI say?"
-fornax hear ultravox-1b take.wav
-fornax draw sdxl-turbo "a tiny doorbell icon, flat style" -o icon.png
-fornax embed nomic-embed "text to search over"
-fornax compare qwen3-4b,apple-fm "explain a doorbell in one sentence"
+fornax ask hf:Qwen/Qwen3-4B-GGUF "explain a doorbell in one sentence"
+fornax see hf:ggml-org/Qwen3-VL-2B-Instruct-GGUF screenshot.png "what does this UI say?"
+fornax hear hf:ggml-org/ultravox-v0_5-llama-3_2-1b-GGUF take.wav
+fornax imagine my-image "a tiny doorbell icon, flat style" -o icon.png
+fornax embed hf:nomic-ai/nomic-embed-text-v1.5-GGUF "text to search over"
+fornax compare hf:Qwen/Qwen3-4B-GGUF,apple-fm "explain a doorbell in one sentence"
 fornax judge kev-4b --state "charged twice, order never arrived" \
   --ask 'escalate|noul|Needs urgent human attention?' \
   --ask 'team|choice|Which team?|returns|shipping|billing'
 ```
 
-Every command fetches what it needs — a pinned engine (llama.cpp,
-stable-diffusion.cpp, kev's source) plus pinned weights (with a projector
-file for vision/audio models) — verifies it, and starts a loopback server
-if one isn't already running. `apple-fm` needs no download at all: it's the
-model inside macOS.
+There is no model catalog to curate or keep fresh — any public Hugging Face
+GGUF repo or Ollama model is a model: `hf:Org/Repo` picks a sensible quant,
+`hf:Org/Repo/File.gguf` an exact one. The pin (revision, bytes, SHA-256) is
+resolved at first fetch and saved to `~/.fornax/custom.json`; every command
+fetches what it needs — a pinned engine (llama.cpp, stable-diffusion.cpp,
+kev's source) plus those pinned weights — verifies it, and starts a loopback
+server if one isn't already running. `apple-fm` needs no download at all:
+it's the model inside macOS.
 
 ## Commands
 
@@ -33,9 +35,9 @@ model inside macOS.
 
 | Command | What it does |
 | --- | --- |
-| `fornax list` | Catalog: sizes, modality, fit on this machine, what is installed |
-| `fornax pull <model>` | Download a model; resumes interrupted downloads. `pull hf:Org/Repo/File.gguf` or `pull ollama:<name>[:<tag>]` adds any public model (flags: `--as`, `--kind vision\|audio --mmproj F`, `--rev`) |
-| `fornax rm <model>` | Delete a model's files and any partial download |
+| `fornax list` | Your models: sizes, modality, fit on this machine, what is installed |
+| `fornax pull <model>` | Download a model; resumes interrupted downloads. A saved id, `hf:Org/Repo[/File.gguf]` (or `Org/Repo`), or `ollama:<name>[:<tag>]` — flags: `--as`, `--kind`, `--mmproj`, `--rev` |
+| `fornax rm <model>…` | Delete a model's files and any partial download; several ids at once, `-all` for every model on disk |
 | `fornax clean` | Remove interrupted downloads, stale staging and old server logs (`-all` wipes everything) |
 | `fornax doctor` | What this machine can run; engine, keys and Earshot status |
 
@@ -47,7 +49,8 @@ model inside macOS.
 | `fornax chat <model>` | Interactive conversation with history (`/exit`, `/clear`) |
 | `fornax see <model> <image> [question]` | Ask a vision model about a png/jpg/webp/gif |
 | `fornax hear <model> <audio> [question]` | Ask an audio model about a take; transcribes by default |
-| `fornax draw <model> "prompt"` | Generate an image — `-o`, `-steps`, `-seed`, `-size WxH`, `-neg` |
+| `fornax imagine <model> "prompt"` | Generate an image with a model you added — `-o`, `-image`, `-steps`, `-seed`, `-size WxH`, `-neg` |
+| `fornax animate <model> "prompt"` | Generate a video clip with a model you added — the same flags plus `-frames` |
 | `fornax say <model> "text"` | Speak text to a WAV — `-o out.wav` (or `-` for stdout), `-voice ref.wav` clones a voice, `-lang en\|zh\|…` |
 | `fornax embed <model> [text]` | Turn text into a vector — one-line JSON on stdout |
 | `fornax rerank <model> "query" <doc…>` | Score documents against a query, best first (or pipe docs on stdin) — `-n` keeps the top N |
@@ -56,14 +59,14 @@ model inside macOS.
 | `fornax compare <m1,m2,…> "prompt"` | Same prompt to several models, replies + speed side by side |
 | `fornax test <model>` | Load it, run a prompt, report speed |
 | `fornax bench <model>` | `llama-bench` on the weights (or median request latency for kev/apple/embed) |
-| `fornax judge <model> --state "…" --ask 'id|type|question|opts…'` | Typed questions → calibrated probabilities (kev / TypeSafe API) |
+| `fornax judge <model> --state "…" --ask 'id|type|question|opts…'` | Typed questions → calibrated probabilities (kev, laya / TypeSafe API) |
 
 **Run models**
 
 | Command | What it does |
 | --- | --- |
 | `fornax run <model>` | Serve on loopback, register with Earshot; Ctrl-C stops. `-idle 20m` stops an unused server; `--events` emits one JSON line per stage for supervisors |
-| `fornax ps` | Which catalog models are serving right now |
+| `fornax ps` | Which models are serving right now |
 | `fornax connect <model>` | Register an already-running model's server with Earshot |
 
 **Workbench**
@@ -72,16 +75,20 @@ model inside macOS.
 | --- | --- |
 | `fornax show <model>` | Pin card + a look inside the artifact — GGUF metadata (arch, params, quant, context), safetensors header, kev checkpoint |
 | `fornax search <query>` | GGUF repos on Hugging Face ranked by downloads; single-file repos print the ready `pull hf:` command |
-| `fornax mcp` | MCP server on stdio — agents call ask/see/hear/embed/draw/say/list as tools |
+| `fornax mcp` | MCP server on stdio — agents call ask/see/hear/embed/imagine/say/models as tools |
 | `fornax version` / `upgrade` | Build stamp; check for a newer release |
 | `fornax completion <zsh\|bash\|fish>` | Shell completion script on stdout |
 
 `fornax list --local` shows only installed models; `--json` prints one JSON
-object per model for scripts. `pull` takes several ids at once.
+object per model for scripts. `pull` and `rm` take several ids at once.
+
+`fornax help <command>` (same as `fornax <command> -h`) prints that command's
+usage line and its flags; `fornax --version` is `fornax version`.
 
 `use` commands reuse the model's server when it's already running via `run`;
 otherwise they spawn a temporary one on a scratch port and reap it when done.
-`run` flags: `-port N`, `-ctx-size N` (default 16384), `-no-connect`.
+`run` flags: `-port N`, `-ctx-size N` (default 16384), `-idle 20m` (stop after
+that long without a request), `-no-connect`, `--events`.
 
 ## Install
 
@@ -115,12 +122,45 @@ and offers the model in the agent's picker. Older daemons without that route,
 or no daemon at all, get a copy-paste block instead — connecting in Settings
 never needs a token.
 
+The served endpoint answers both OpenAI (`/v1/chat/completions`) and
+Anthropic (`/v1/messages`) wire formats, and the generated key works as
+`Authorization: Bearer` or `x-api-key` — so Claude-flavored clients just get
+`ANTHROPIC_BASE_URL=http://127.0.0.1:PORT ANTHROPIC_API_KEY=<key>` (`run`
+prints the ready pair).
+
+Earshot drives fornax the other way too. Settings ▸ Local models lists your
+saved models, gets a model with one button, stops it, and starts it again
+when a session picks it. It does that by running this binary, nothing more,
+through the same surface any front end can use:
+
+```sh
+fornax list --json                                       # one model per line: fit, installed, serving, port
+fornax run hf:Qwen/Qwen3-4B-GGUF --events -idle 20m      # one JSON event per line on stdout
+```
+
+```json
+{"event":"progress","label":"hf-qwen3-4b","done":251857291,"total":2497280256}
+{"event":"stage","stage":"verifying","model":"hf-qwen3-4b"}
+{"event":"stage","stage":"loading","model":"hf-qwen3-4b"}
+{"event":"ready","model":"hf-qwen3-4b","url":"http://127.0.0.1:7401/v1","port":7401,"earshot":"connected","detail":""}
+{"event":"alive"}
+{"event":"stopped","model":"hf-qwen3-4b","reason":"idle"}
+```
+
+With `--events` the model server logs to `~/.fornax/server.log`, failures end
+in an `error` event, and an `alive` heartbeat every five seconds doubles as a
+leash: when nothing reads stdout any more, fornax stops the model. SIGTERM
+stops it cleanly. `pull --events` emits the same `progress`, then `installed`.
+
 ## Verification
 
-Every artifact is pinned in source: each engine release and each weights file
-(plus `mmproj` projectors and `hf:` customs, pinned at add time) carries an
-immutable revision, exact byte count, and SHA-256. Downloads resume through
-`.part` files, verify before install, and weights re-hash before every spawn.
+Every artifact is pinned: engine releases and the built-in models carry an
+immutable revision, exact byte count and SHA-256 in source, and every pulled
+model gets the same triple at fetch time — HF serves the LFS sha256 and byte
+count in its own headers, Ollama's manifest digest is the layer's SHA-256.
+Downloads resume through `.part` files, verify before install, and weights
+re-hash before every spawn. `fornax pins` re-checks every saved pin against
+upstream.
 Model servers start with a scrubbed environment, bind loopback only, and
 require a generated API key (`~/.fornax/server.key`, mode 600).
 
@@ -131,6 +171,7 @@ require a generated API key (`~/.fornax/server.key`, mode 600).
   engine/b11060/…            one unpacked llama.cpp release
   engine/sd-master-*/…       one unpacked stable-diffusion.cpp release
   kev/src/…                  pinned kev source + its uv venv
+  laya/src/… + serve.py      pinned laya source, its uv venv, the serve shim
   models/<id>/<file>         weights + projectors + verified.sha256
   models/<id>/*.part         resumable downloads
   models/apple-fm/fm-bridge  compiled Swift bridge for apple-fm
@@ -141,36 +182,29 @@ require a generated API key (`~/.fornax/server.key`, mode 600).
 
 `FORNAX_HOME` overrides the home directory.
 
-## Catalog
+## Models
 
-| id | kind | size | notes |
-| --- | --- | --- | --- |
-| `qwen3-4b` | text | 2.3 GB | a small local agent model for ordinary Macs |
-| `qwen3-8b` | text | 4.7 GB | sharper answers on 16 GB or more |
-| `qwen3-14b` | text | 8.4 GB | the largest model in the catalog; wants 24 GB or more |
-| `qwen3.5-0.8b` | text | 795 MB | newest tiny Qwen; very fast |
-| `ministral-3-8b` | text | 8.4 GB | Mistral's current 8B instruct |
-| `gpt-oss-20b` | text | 11.3 GB | OpenAI's open MoE — 3.6B active, reasoning and tools |
-| `gemma-4-e4b` | vision | 8.6 GB | Google's multimodal 4B — text and images |
-| `qwen3.8-27b` | vision | 19 GB | current flagship local; sees images too, wants 32 GB |
-| `qwen3-vl-2b` | vision | 2.1 GB | current-gen vision-language at 2B |
-| `ultravox-1b` | audio | 2.0 GB | hears audio takes; transcribes and answers |
-| `qwen3-asr-0.6b` | audio | 972 MB | tiny dedicated speech-to-text |
-| `kev-0.6b` | decision | ~3 GB | typed questions → probabilities; fastest kev |
-| `kev-4b` | decision | ~10 GB | best accuracy per byte; the kev to start with |
-| `kev-8b` | decision | ~18 GB | largest kev; wants a bigger machine |
-| `apple-fm` | text | os | Apple's on-device model; needs Apple Silicon on macOS 26+ |
-| `nomic-embed` | embed | 80 MB | text → vectors for search and RAG |
-| `embeddinggemma-300m` | embed | 318 MB | Google's small multilingual embedder |
-| `qwen3-tts-1.7b` | speech | 2.1 GB | text → speech in 10 languages, voice cloning via `-voice` |
-| `sdxl-turbo` | image | 6.5 GB | text to image in a few steps (stable-diffusion.cpp) |
+`fornax pull hf:Org/Repo` — or just `run`/`ask` the same ref — resolves the
+repo's file list and picks a quant (Q4_K_M, then Q5_K_M, Q6_K, Q4_K_XL,
+Q8_0…). Name the file to be exact: `hf:Org/Repo/Model-Q8_0.gguf`. Split
+archives (`-00001-of-0000N`) pull every part; a repo `mmproj-*.gguf`
+projector attaches itself for vision, audio and speech models; the kind is
+inferred from the name (`rerank`, `embed`, `tts`, `vl`, `asr`…) and `--kind`
+overrides it. `search <query>` ranks GGUF repos by downloads.
 
-Text spans `Qwen/Qwen3-*-GGUF`, `ggml-org/Qwen3.5-0.8B`,
-`ggml-org/Ministral-3-8B-Instruct` and `ggml-org/gpt-oss-20b`; vision is
-`ggml-org/Qwen3-VL-2B`, `gemma-4-E4B` and `Qwen3.8-27B`;
-audio is `ggml-org/ultravox` and `Qwen3-ASR` — all pinned revisions on
-Hugging Face, served by pinned llama.cpp `b11060` (`--mmproj` loads the
-projectors). `list` marks whether each fits your RAM.
+Everything lands in `custom.json` with a derived id — `hf:Qwen/Qwen3-4B-GGUF`
+becomes `hf-qwen3-4b` — which `list`/`ask`/`run`/`rm`/`clean` treat like a
+built-in from then on; the same ref resolves offline once saved. `list`
+marks whether each fits your RAM. Served by pinned llama.cpp `b11060`
+(`--mmproj` loads projectors, `--embeddings`/`--reranking` the rest).
+
+Built-ins — the models that can't come from a GGUF repo:
+
+| id | kind | notes |
+| --- | --- | --- |
+| `kev-0.6b` / `kev-4b` / `kev-8b` | decision | typed questions → probabilities; ~3/10/18 GB |
+| `laya` / `laya-multilingual` / `laya-typed-decisions` | decision | Convai's encoder decision models; ~1 GB each |
+| `apple-fm` | text | Apple's on-device model; Apple Silicon on macOS 26+ |
 
 kev models are [jaredpalmer/kev](https://github.com/jaredpalmer/kev) — a
 Jev-style decision model (LoRA + readout head on Qwen3 base) that answers
@@ -181,6 +215,17 @@ built once under `~/.fornax/kev/` (needs [uv](https://docs.astral.sh/uv/),
 macOS or Linux). The Qwen3 base model downloads from Hugging Face on first
 serve. `run kev-4b` prints a TypeSafe-SDK `base_url` block — the official
 `typesafe-sdk` works against it unchanged.
+
+laya models are [Convai Innovations'](https://github.com/NandhaKishorM/laya)
+open-weights decision models — the same typed-question protocol as kev, but a
+plain encoder forward pass instead of a LoRA'd LLM, so answers land in tens
+of milliseconds. Each checkpoint's files (safetensors, `rl_agent_config.json`,
+encoder and tokenizer configs) are pinned from the `convaiinnovations/laya`
+HF repo, and a `uv` venv is built once under `~/.fornax/laya/` (needs
+[uv](https://docs.astral.sh/uv/), macOS or Linux). The pypi package is a
+library with no server, so fornax serves it through an embedded stdlib shim
+(`laya_serve.py`) on loopback behind the generated key — `run laya` prints a
+TypeSafe-SDK `base_url` block like kev's, but with the real `api_key`.
 
 `judge` flags: `--state` the document, repeatable `--ask
 'id|type|instructions|options…'` (types `noul`, `choice`, `score`), or
@@ -197,23 +242,28 @@ bridge compile. Token counts in `test`/`bench` are estimates (~4 chars/token)
 — the framework doesn't expose them. Text only: `see`, `hear` and `judge`
 don't apply.
 
-`sdxl-turbo` runs on a pinned stable-diffusion.cpp build (`sd-cli`,
-foreground — no server) and ships engine binaries for macOS arm64, Linux
-x86_64 and Windows x86_64 only. `qwen3-tts-1.7b` runs through `llama-tts`
-in the same pinned llama.cpp archive — also foreground, no server —
-writing a 24 kHz WAV per call; `-voice take.wav` clones a voice from a
-reference take. `nomic-embed` is served by the same pinned llama.cpp with
-`--embeddings`, so `run`/`ps`/`connect` work on it too.
+Image and video run on a pinned stable-diffusion.cpp build (`sd-cli`,
+foreground — no server) with engine binaries for macOS arm64, Linux x86_64
+and Windows x86_64 only. fornax pins that engine and no image or video
+model: you add the one you want, with the files and `sd-cli` arguments it
+needs saved beside it, and `imagine`/`animate` run it that way every time.
 
-Custom models: `fornax pull hf:Org/Repo/File.gguf` (or paste a
-huggingface.co blob/resolve URL) resolves the pin at fetch time — the LFS
-sha256 and byte size come from HF's own headers — saves the entry to
-`~/.fornax/custom.json` and installs through the same verify path. The id
-sticks for `ask`/`run`/`rm`/`clean` like any catalog model; `--as` names it,
-`--kind vision|audio --mmproj <file>` adds a projector.
+```
+fornax pull hf:Org/Repo/video.gguf --as my-video --kind video \
+  --with vae=hf:Org/Other/vae.safetensors --with t5xxl=hf:Org/Enc/umt5.gguf \
+  --args "--steps 4 --cfg-scale 1.0 --video-frames 33"
+```
 
-`fornax pull ollama:<name>[:<tag>]` (or an ollama.com/library URL) does the
-same against the Ollama registry: the manifest's layer digest is already the
+`--with <flag>=hf:…` is any `sd-cli` file flag. Weights that come with
+companion files load as `--diffusion-model`; a lone checkpoint loads as `-m`.
+Speech models run through `llama-tts` in the same pinned llama.cpp archive —
+foreground, no server — writing a 24 kHz WAV per call; `-voice take.wav`
+clones a voice from a reference take. Embed and rerank models are served by
+the same pinned llama.cpp with `--embeddings`/`--reranking`, so `run`/`ps`/
+`connect` work on them too.
+
+`fornax pull ollama:<name>[:<tag>]` (or an ollama.com/library URL) resolves
+against the Ollama registry: the manifest's layer digest is already the
 weights' SHA-256, so the pin comes straight from the manifest. Models with a
 projector layer (llava-style vision) install it as the `mmproj` and land as
 `vision` kind automatically; `--as`/`--kind` override.
@@ -222,4 +272,5 @@ projector layer (llava-style vision) install it as the `mmproj` and land as
 
 MIT. llama.cpp is MIT (ggml-org); Qwen, gpt-oss, Ministral and Ultravox
 weights are Apache-2.0; Gemma weights are under the Gemma Terms of Use;
-Llama-3.2 under its model license; kev is Apache-2.0 (jaredpalmer).
+Llama-3.2 under its model license; kev is Apache-2.0 (jaredpalmer); laya is
+Apache-2.0 (Convai Innovations).

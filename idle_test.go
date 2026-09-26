@@ -44,7 +44,9 @@ func TestIdleNeverStopsAServerItCannotRead(t *testing.T) {
 func TestFingerprintMovesWithTokensAndInFlightRequests(t *testing.T) {
 	read := func(body string) string { return fingerprint(bufio.NewScanner(strings.NewReader(body))) }
 	quiet := "llamacpp:prompt_tokens_total 10\nllamacpp:requests_processing 0\nother 5\n"
-	if read(quiet) != read(quiet) {
+	idle := read(quiet)
+	time.Sleep(time.Millisecond)
+	if read(quiet) != idle {
 		t.Fatal("an idle server must fingerprint the same twice")
 	}
 	if read(quiet) == read("llamacpp:prompt_tokens_total 11\nllamacpp:requests_processing 0\n") {

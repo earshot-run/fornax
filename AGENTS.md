@@ -1,7 +1,10 @@
 # Working in this repository
 
-fornax is a pure-stdlib Go CLI — no third-party modules. Read `README.md`
-for the product and `CONTRIBUTING.md` for the file map and pin recipe.
+fornax is a pure-stdlib Go CLI — no third-party modules. `package main`
+holds the commands and the runtimes they drive; `internal/catalog`,
+`internal/paths`, `internal/ui` and `internal/events` hold the layers
+underneath. Read `README.md` for the product and `CONTRIBUTING.md` for the
+file map and pin recipe.
 
 Verify before claiming done: `go build`, `gofmt -l .` (empty), `go vet ./...`,
 `go test ./...`, and the six-target cross-build loop in CONTRIBUTING.md.

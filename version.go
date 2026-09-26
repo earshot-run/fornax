@@ -22,6 +22,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/earshot-run/fornax/internal/catalog"
+	"github.com/earshot-run/fornax/internal/openai"
+	"github.com/earshot-run/fornax/internal/ui"
 )
 
 var version = "dev"
@@ -38,23 +42,29 @@ func cmdVersion(args []string) error {
 		return fmt.Errorf("usage: fornax version")
 	}
 	fmt.Printf("fornax %s\n", version)
-	fmt.Println(dim("llama.cpp " + engineVersion))
+	fmt.Println(ui.Dim("llama.cpp " + catalog.EngineVersion))
 	return nil
 }
 
+type ghAsset struct {
+	Name string `json:"name"`
+	URL  string `json:"browser_download_url"`
+	// GitHub reports the uploaded artifact's digest ("sha256:…") — `fornax
+	// pins` diffs it against the catalog.
+	Size   int64  `json:"size"`
+	Digest string `json:"digest"`
+}
+
 type ghRelease struct {
-	TagName string `json:"tag_name"`
-	HTMLURL string `json:"html_url"`
-	Assets  []struct {
-		Name string `json:"name"`
-		URL  string `json:"browser_download_url"`
-	} `json:"assets"`
+	TagName string    `json:"tag_name"`
+	HTMLURL string    `json:"html_url"`
+	Assets  []ghAsset `json:"assets"`
 }
 
 func cmdUpgrade(ctx context.Context, args []string) error {
 	set := flag.NewFlagSet("upgrade", flag.ExitOnError)
 	check := set.Bool("check", false, "report only — do not download or install")
-	set.Usage = func() { fmt.Fprintln(os.Stderr, "usage: fornax upgrade [-check]") }
+	set.Usage = ui.UsageFunc(set, "usage: fornax upgrade [-check]")
 	set.Parse(args)
 	if set.NArg() != 0 {
 		return fmt.Errorf("usage: fornax upgrade [-check]")
@@ -79,14 +89,14 @@ func cmdUpgrade(ctx context.Context, args []string) error {
 	case compareVersions(latest, current) <= 0:
 		fmt.Printf("a different release exists (v%s, you run v%s)\n", latest, current)
 		if rel.HTMLURL != "" {
-			fmt.Println(dim(rel.HTMLURL))
+			fmt.Println(ui.Dim(rel.HTMLURL))
 		}
 		return nil
 	}
 	if *check {
 		fmt.Printf("v%s available (you run v%s)\n", latest, current)
 		if rel.HTMLURL != "" {
-			fmt.Println(dim(rel.HTMLURL))
+			fmt.Println(ui.Dim(rel.HTMLURL))
 		}
 		return nil
 	}
@@ -119,7 +129,7 @@ func latestRelease(ctx context.Context, api string) (*ghRelease, error) {
 		return nil, fmt.Errorf("api.github.com answered HTTP %d", resp.StatusCode)
 	}
 	var rel ghRelease
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxHTTPBody)).Decode(&rel); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, openai.MaxBody)).Decode(&rel); err != nil {
 		return nil, fmt.Errorf("the release reply was not readable: %w", err)
 	}
 	return &rel, nil
@@ -218,11 +228,11 @@ func performUpgrade(ctx context.Context, rel *ghRelease, latest string) error {
 		fmt.Printf("v%s is out — download %s and replace %s\n", latest, assetURL, exe)
 		return nil
 	}
-	fmt.Fprintf(os.Stderr, "%s\n", dim("downloading fornax "+rel.TagName))
+	fmt.Fprintf(os.Stderr, "%s\n", ui.Dim("downloading fornax "+rel.TagName))
 	if err := upgradeBinary(ctx, rel, asset, exe); err != nil {
 		return err
 	}
-	fmt.Printf("%s fornax v%s → v%s\n", green("✓"), current(), latest)
+	fmt.Printf("%s fornax v%s → v%s\n", ui.Green("✓"), current(), latest)
 	return nil
 }
 
@@ -312,19 +322,6 @@ func fetchBody(ctx context.Context, url string) (io.ReadCloser, error) {
 		return nil, fmt.Errorf("%s answered HTTP %d", url, resp.StatusCode)
 	}
 	return resp.Body, nil
-}
-
-func fetchText(ctx context.Context, url string) (string, error) {
-	body, err := fetchBody(ctx, url)
-	if err != nil {
-		return "", err
-	}
-	defer body.Close()
-	data, err := io.ReadAll(io.LimitReader(body, maxHTTPBody))
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
 }
 
 // Semver-ish ordering: 1.10.0 > 1.9.0. Non-numeric segments compare as

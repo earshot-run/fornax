@@ -1,8 +1,9 @@
-package main
+package openai
 
-// Talking to the running llama-server: one chat-completions client that both
-// the one-shot commands and the interactive REPL share. Content is text by
-// default and gains image/audio parts for vision and audio models.
+// Package openai talks to the running model server: one chat-completions
+// client that both the one-shot commands and the interactive REPL share,
+// plus the raw POST the embeddings, rerank and kev clients build on. Content
+// is text by default and gains image/audio parts for vision and audio models.
 
 import (
 	"bufio"
@@ -19,35 +20,38 @@ import (
 	"time"
 )
 
-type message struct {
+// MaxBody caps what fornax will read from any model server or HTTP API.
+const MaxBody = 2 * 1024 * 1024
+
+type Message struct {
 	Role    string `json:"role"`
 	Content any    `json:"content"`
 }
 
-func textMessage(role, text string) message {
-	return message{Role: role, Content: text}
+func TextMessage(role, text string) Message {
+	return Message{Role: role, Content: text}
 }
 
-type chatUsage struct {
+type Usage struct {
 	PromptTokens     int     `json:"prompt_tokens"`
 	CompletionTokens int     `json:"completion_tokens"`
 	PredictedPerSec  float64 `json:"predicted_per_second"`
 }
 
-type chatReply struct {
+type Reply struct {
 	Text    string
-	Usage   *chatUsage
+	Usage   *Usage
 	Timings map[string]any
 }
 
 // One non-streaming completion. `content` is a plain string or a parts array.
-func chatOnce(ctx context.Context, url, key, model string, messages []message, maxTokens int) (*chatReply, error) {
-	return chatOnceFull(ctx, url, key, model, messages, maxTokens, nil)
+func Once(ctx context.Context, url, key, model string, messages []Message, maxTokens int) (*Reply, error) {
+	return OnceFull(ctx, url, key, model, messages, maxTokens, nil)
 }
 
-// chatOnce with extra request-body fields merged in — response_format and
+// Once with extra request-body fields merged in — response_format and
 // friends for structured output. extra keys override the defaults.
-func chatOnceFull(ctx context.Context, url, key, model string, messages []message, maxTokens int, extra map[string]any) (*chatReply, error) {
+func OnceFull(ctx context.Context, url, key, model string, messages []Message, maxTokens int, extra map[string]any) (*Reply, error) {
 	req := map[string]any{
 		"model":      model,
 		"messages":   messages,
@@ -58,30 +62,30 @@ func chatOnceFull(ctx context.Context, url, key, model string, messages []messag
 		req[k] = v
 	}
 	body, _ := json.Marshal(req)
-	resp, err := post(ctx, url+"/chat/completions", key, body)
+	resp, err := Post(ctx, url+"/chat/completions", key, body)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, apiError(resp)
+		return nil, Error(resp)
 	}
 	var parsed struct {
 		Choices []struct {
 			Message struct {
 				Content string `json:"content"`
-			} `json:"message"`
+			} `json:"Message"`
 		} `json:"choices"`
-		Usage   *chatUsage     `json:"usage"`
+		Usage   *Usage         `json:"usage"`
 		Timings map[string]any `json:"timings"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxHTTPBody)).Decode(&parsed); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, MaxBody)).Decode(&parsed); err != nil {
 		return nil, fmt.Errorf("the reply was not readable: %w", err)
 	}
 	if len(parsed.Choices) == 0 {
 		return nil, fmt.Errorf("the server returned no reply")
 	}
-	return &chatReply{
+	return &Reply{
 		Text:    parsed.Choices[0].Message.Content,
 		Usage:   parsed.Usage,
 		Timings: parsed.Timings,
@@ -89,24 +93,24 @@ func chatOnceFull(ctx context.Context, url, key, model string, messages []messag
 }
 
 // One streaming completion; onToken fires per delta as it arrives.
-func chatStream(ctx context.Context, url, key, model string, messages []message, maxTokens int, onToken func(string)) (*chatReply, error) {
+func Stream(ctx context.Context, url, key, model string, messages []Message, maxTokens int, onToken func(string)) (*Reply, error) {
 	body, _ := json.Marshal(map[string]any{
 		"model":      model,
 		"messages":   messages,
 		"max_tokens": maxTokens,
 		"stream":     true,
 	})
-	resp, err := post(ctx, url+"/chat/completions", key, body)
+	resp, err := Post(ctx, url+"/chat/completions", key, body)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, apiError(resp)
+		return nil, Error(resp)
 	}
 	var text strings.Builder
-	scanner := bufio.NewScanner(io.LimitReader(resp.Body, 64*maxHTTPBody))
-	scanner.Buffer(make([]byte, 0, 64*1024), maxHTTPBody)
+	scanner := bufio.NewScanner(io.LimitReader(resp.Body, 64*MaxBody))
+	scanner.Buffer(make([]byte, 0, 64*1024), MaxBody)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data:") {
@@ -123,7 +127,7 @@ func chatStream(ctx context.Context, url, key, model string, messages []message,
 				} `json:"delta"`
 			} `json:"choices"`
 			Error *struct {
-				Message string `json:"message"`
+				Message string `json:"Message"`
 			} `json:"error"`
 		}
 		if json.Unmarshal([]byte(data), &chunk) != nil {
@@ -142,10 +146,10 @@ func chatStream(ctx context.Context, url, key, model string, messages []message,
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("the reply stream broke: %w", err)
 	}
-	return &chatReply{Text: text.String()}, nil
+	return &Reply{Text: text.String()}, nil
 }
 
-func post(ctx context.Context, url, key string, body []byte) (*http.Response, error) {
+func Post(ctx context.Context, url, key string, body []byte) (*http.Response, error) {
 	client := &http.Client{
 		Timeout:   10 * time.Minute,
 		Transport: &http.Transport{Proxy: nil},
@@ -163,11 +167,11 @@ func post(ctx context.Context, url, key string, body []byte) (*http.Response, er
 	return resp, nil
 }
 
-func apiError(resp *http.Response) error {
+func Error(resp *http.Response) error {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	var parsed struct {
 		Error struct {
-			Message string `json:"message"`
+			Message string `json:"Message"`
 		} `json:"error"`
 	}
 	if json.Unmarshal(body, &parsed) == nil && parsed.Error.Message != "" {
@@ -180,7 +184,7 @@ func apiError(resp *http.Response) error {
 }
 
 // An image the model can look at: data URL part for chat completions.
-func imagePart(path string) (map[string]any, error) {
+func ImagePart(path string) (map[string]any, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("could not read %s: %w", path, err)
@@ -204,7 +208,7 @@ func imagePart(path string) (map[string]any, error) {
 }
 
 // An audio take the model can hear: input_audio part for chat completions.
-func audioPart(path string) (map[string]any, error) {
+func AudioPart(path string) (map[string]any, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("could not read %s: %w", path, err)

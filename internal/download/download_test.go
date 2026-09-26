@@ -1,4 +1,4 @@
-package main
+package download
 
 import (
 	"context"
@@ -57,7 +57,7 @@ func TestFetchResumesAPartDownload(t *testing.T) {
 	// An interrupted first attempt left half the bytes behind.
 	os.WriteFile(part, payload[:2048], 0o600)
 
-	if err := fetch(context.Background(), server.URL, int64(len(payload)), part, func(int64) {}); err != nil {
+	if err := Fetch(context.Background(), server.URL, int64(len(payload)), part, func(int64) {}); err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
 	got, _ := os.ReadFile(part)
@@ -65,7 +65,7 @@ func TestFetchResumesAPartDownload(t *testing.T) {
 		t.Fatalf("fetched %d bytes, want %d", len(got), len(payload))
 	}
 	sum := sha256.Sum256(payload)
-	if err := verify(part, int64(len(payload)), hex.EncodeToString(sum[:])); err != nil {
+	if err := Verify(part, int64(len(payload)), hex.EncodeToString(sum[:])); err != nil {
 		t.Fatalf("verify: %v", err)
 	}
 }
@@ -75,7 +75,7 @@ func TestVerifyRejectsTamperedBytes(t *testing.T) {
 	path := filepath.Join(root, "model.gguf")
 	os.WriteFile(path, []byte("tampered"), 0o600)
 	sum := sha256.Sum256([]byte("honest!!"))
-	err := verify(path, 8, hex.EncodeToString(sum[:]))
+	err := Verify(path, 8, hex.EncodeToString(sum[:]))
 	if err == nil {
 		t.Fatal("verify accepted a bad digest")
 	}

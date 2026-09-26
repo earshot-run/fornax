@@ -18,6 +18,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/earshot-run/fornax/internal/catalog"
+	"github.com/earshot-run/fornax/internal/paths"
+	"github.com/earshot-run/fornax/internal/ui"
 )
 
 // Rows of embedded metadata to print before folding the rest into "+N more".
@@ -25,7 +29,7 @@ const showMetaMax = 15
 
 func cmdShow(args []string) error {
 	set := flag.NewFlagSet("show", flag.ExitOnError)
-	set.Usage = func() { fmt.Fprintln(os.Stderr, "usage: fornax show <model>") }
+	set.Usage = ui.UsageFunc(set, "usage: fornax show <model>")
 	set.Parse(args)
 	if set.NArg() != 1 {
 		return fmt.Errorf("usage: fornax show <model>")
@@ -34,109 +38,111 @@ func cmdShow(args []string) error {
 	if spec == nil {
 		return unknownModel(set.Arg(0))
 	}
-	root := home()
+	root := paths.Home()
 
 	row := func(mark, label, value string) {
-		fmt.Printf("  %s %s %s\n", mark, cell(label, 8, dim), value)
+		fmt.Printf("  %s %s %s\n", mark, ui.Cell(label, 8, ui.Dim), value)
 	}
-	row(" ", "id", bold(spec.id))
-	row(" ", "name", spec.name)
+	row(" ", "id", ui.Bold(spec.ID))
+	row(" ", "name", spec.Name)
 	rt := "llama.cpp"
-	switch spec.rt {
-	case runtimeKev:
+	switch spec.Runtime {
+	case catalog.Kev:
 		rt = "kev"
-	case runtimeApple:
+	case catalog.Laya:
+		rt = "laya"
+	case catalog.Apple:
 		rt = "apple fm"
-	case runtimeSD:
+	case catalog.SD:
 		rt = "stable-diffusion.cpp"
 	}
-	row(" ", "kind", kindStyled(spec.kind)(spec.kind.String())+dim(" · "+rt))
-	if spec.repo != "" {
-		row(" ", "repo", spec.repo)
-	} else if spec.model.url != "" {
-		row(" ", "source", dim(spec.model.url))
+	row(" ", "kind", kindStyled(spec.Kind)(spec.Kind.String())+ui.Dim(" · "+rt))
+	if spec.Repo != "" {
+		row(" ", "repo", spec.Repo)
+	} else if spec.Model.URL != "" {
+		row(" ", "source", ui.Dim(spec.Model.URL))
 	}
-	if spec.model.revision != "" {
-		row(" ", "revision", spec.model.revision)
+	if spec.Model.Revision != "" {
+		row(" ", "revision", spec.Model.Revision)
 	}
-	if spec.dtype != "" {
-		row(" ", "dtype", spec.dtype)
+	if spec.DType != "" {
+		row(" ", "dtype", spec.DType)
 	}
-	switch partial := modelPartialBytes(root, spec); {
+	switch partial := paths.ModelPartialBytes(root, spec); {
 	case modelInstalled(root, spec):
-		row(markOK(), "status", green("installed"))
-	case partial > 0 && spec.totalBytes() > 0:
-		row(markIdle(), "status", yellow(fmt.Sprintf("%d%% downloaded", partial*100/spec.totalBytes())))
+		row(ui.MarkOK(), "status", ui.Green("installed"))
+	case partial > 0 && spec.TotalBytes() > 0:
+		row(ui.MarkIdle(), "status", ui.Yellow(fmt.Sprintf("%d%% downloaded", partial*100/spec.TotalBytes())))
 	default:
-		row(markIdle(), "status", dim("not installed"))
+		row(ui.MarkIdle(), "status", ui.Dim("not installed"))
 	}
 
 	nameWidth := 0
-	for _, pin := range spec.files() {
-		nameWidth = max(nameWidth, len(pin.file))
+	for _, pin := range spec.Files() {
+		nameWidth = max(nameWidth, len(pin.File))
 	}
-	for _, pin := range spec.files() {
-		mark, state := markIdle(), dim("not installed")
+	for _, pin := range spec.Files() {
+		mark, state := ui.MarkIdle(), ui.Dim("not installed")
 		switch {
 		case fileInstalled(root, spec, pin):
-			mark, state = markOK(), green("installed")
+			mark, state = ui.MarkOK(), ui.Green("installed")
 		default:
-			if part := partialBytes(partPath(root, spec, pin), pin.bytes); part > 0 {
-				state = yellow(fmt.Sprintf("%d%%", part*100/max(pin.bytes, 1)))
+			if part := paths.PartialBytes(paths.PartPath(root, spec, pin), pin.Bytes); part > 0 {
+				state = ui.Yellow(fmt.Sprintf("%d%%", part*100/max(pin.Bytes, 1)))
 			}
 		}
-		sha := pin.sha256
+		sha := pin.SHA256
 		if len(sha) > 12 {
 			sha = sha[:12] + "…"
 		}
 		fmt.Printf("  %s %s %s %s %s %s\n",
-			mark, cell("file", 8, dim), cell(pin.file, nameWidth, nil),
-			cell(humanSize(pin.bytes), 7, nil), dim("sha256 "+sha), state)
+			mark, ui.Cell("file", 8, ui.Dim), ui.Cell(pin.File, nameWidth, nil),
+			ui.Cell(ui.HumanSize(pin.Bytes), 7, nil), ui.Dim("sha256 "+sha), state)
 	}
-	total := humanSize(spec.totalBytes())
-	if spec.rt == runtimeApple {
+	total := ui.HumanSize(spec.TotalBytes())
+	if spec.Runtime == catalog.Apple {
 		total = "os"
-	} else if spec.fitBytes > 0 {
-		total += dim(" · wants ~" + humanSize(spec.fitBytes) + " RAM")
+	} else if spec.FitBytes > 0 {
+		total += ui.Dim(" · wants ~" + ui.HumanSize(spec.FitBytes) + " RAM")
 	}
 	row(" ", "total", total)
-	port := fmt.Sprintf("%d", spec.port)
-	if spec.rt == runtimeSD {
-		port += dim(" — draws, does not serve")
+	port := fmt.Sprintf("%d", spec.Port)
+	if spec.Runtime == catalog.SD {
+		port += ui.Dim(" — draws, does not serve")
 	}
 	row(" ", "port", port)
-	row(" ", "dir", dim(modelDir(root, spec)))
+	row(" ", "dir", ui.Dim(paths.ModelDir(root, spec)))
 
-	switch spec.rt {
-	case runtimeApple:
+	switch spec.Runtime {
+	case catalog.Apple:
 		if appleInstalled(root, spec) {
-			row(markOK(), "artifact", "the model ships in macOS — bridge compiled")
+			row(ui.MarkOK(), "artifact", "the model ships in macOS — bridge compiled")
 		} else {
-			row(markIdle(), "artifact", dim("the model ships in macOS — nothing to download"))
+			row(ui.MarkIdle(), "artifact", ui.Dim("the model ships in macOS — nothing to download"))
 		}
-	case runtimeKev:
+	case catalog.Kev:
 		// The pinned tarball unpacks to a checkpoint dir holding head.pt.
 		switch ckpt := kevCkptDir(root, spec); {
 		case ckpt != "":
-			row(markOK(), "ckpt", filepath.Base(ckpt)+dim(" — "+humanSize(dirSize(ckpt))+" unpacked"))
-		case fileInstalled(root, spec, &spec.model):
-			row(markIdle(), "ckpt", dim("tarball installed, checkpoint not unpacked yet"))
+			row(ui.MarkOK(), "ckpt", filepath.Base(ckpt)+ui.Dim(" — "+ui.HumanSize(dirSize(ckpt))+" unpacked"))
+		case fileInstalled(root, spec, &spec.Model):
+			row(ui.MarkIdle(), "ckpt", ui.Dim("tarball installed, checkpoint not unpacked yet"))
 		default:
-			row(markIdle(), "ckpt", dim("not unpacked yet"))
+			row(ui.MarkIdle(), "ckpt", ui.Dim("not unpacked yet"))
 		}
 	}
 
-	pin := &spec.model
-	name := strings.ToLower(pin.file)
+	pin := &spec.Model
+	name := strings.ToLower(pin.File)
 	switch {
 	case fileInstalled(root, spec, pin) && strings.HasSuffix(name, ".gguf"):
-		showGGUF(filePath(root, spec, pin))
+		showGGUF(paths.FilePath(root, spec, pin))
 	case fileInstalled(root, spec, pin) && strings.HasSuffix(name, ".safetensors"):
-		showSafetensors(filePath(root, spec, pin))
+		showSafetensors(paths.FilePath(root, spec, pin))
 	}
 
 	fmt.Println()
-	fmt.Printf("  %s\n", dim(spec.summary))
+	fmt.Printf("  %s\n", ui.Dim(spec.Summary))
 	return nil
 }
 
@@ -179,13 +185,13 @@ func showGGUF(path string) {
 	fmt.Println()
 	switch {
 	case errors.Is(err, errNotGGUF):
-		fmt.Printf("  %s\n", dim("not a GGUF artifact"))
+		fmt.Printf("  %s\n", ui.Dim("not a GGUF artifact"))
 		return
 	case err != nil:
-		fmt.Printf("  %s\n", dim("could not read the GGUF header: "+err.Error()))
+		fmt.Printf("  %s\n", ui.Dim("could not read the GGUF header: "+err.Error()))
 		return
 	}
-	fmt.Printf("  %s\n", dim(fmt.Sprintf("gguf v%d · %d tensors · %d metadata keys", version, tensors, len(kvs))))
+	fmt.Printf("  %s\n", ui.Dim(fmt.Sprintf("gguf v%d · %d tensors · %d metadata keys", version, tensors, len(kvs))))
 
 	byKey := map[string]string{}
 	for _, kv := range kvs {
@@ -242,14 +248,14 @@ func showGGUF(path string) {
 		case "general.file_type":
 			if n, err := strconv.Atoi(val); err == nil {
 				if name, ok := ggufFTypes[n]; ok {
-					val = name + dim(fmt.Sprintf(" (ftype %d)", n))
+					val = name + ui.Dim(fmt.Sprintf(" (ftype %d)", n))
 				}
 			}
 		}
-		fmt.Printf("    %s %s\n", cell(key, width, dim), val)
+		fmt.Printf("    %s %s\n", ui.Cell(key, width, ui.Dim), val)
 	}
 	if rest := len(kvs) - len(order); rest > 0 {
-		fmt.Printf("    %s\n", dim(fmt.Sprintf("+ %d more", rest)))
+		fmt.Printf("    %s\n", ui.Dim(fmt.Sprintf("+ %d more", rest)))
 	}
 }
 
@@ -482,7 +488,7 @@ func showSafetensors(path string) {
 		tensors--
 	}
 	fmt.Println()
-	fmt.Printf("  %s\n", dim(fmt.Sprintf("safetensors · %d tensors", tensors)))
+	fmt.Printf("  %s\n", ui.Dim(fmt.Sprintf("safetensors · %d tensors", tensors)))
 	var keys []string
 	for key := range meta {
 		keys = append(keys, key)
@@ -497,10 +503,10 @@ func showSafetensors(path string) {
 		if shown >= showMetaMax {
 			break
 		}
-		fmt.Printf("    %s %v\n", cell(key, width, dim), meta[key])
+		fmt.Printf("    %s %v\n", ui.Cell(key, width, ui.Dim), meta[key])
 		shown++
 	}
 	if rest := len(keys) - shown; rest > 0 {
-		fmt.Printf("    %s\n", dim(fmt.Sprintf("+ %d more", rest)))
+		fmt.Printf("    %s\n", ui.Dim(fmt.Sprintf("+ %d more", rest)))
 	}
 }
