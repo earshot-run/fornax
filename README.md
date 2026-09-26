@@ -15,6 +15,8 @@ curl -fsSL https://raw.githubusercontent.com/earshot-run/fornax/main/install.sh 
 fornax studio
 ```
 
+Installs the latest successful `main` build; no Go toolchain needed.
+
 ![Chatting with a local model in fornax studio](assets/screens/studio-chat.gif)
 
 ## The studio

@@ -11,6 +11,8 @@ curl -fsSL https://raw.githubusercontent.com/earshot-run/fornax/main/install.sh 
 fornax studio
 ```
 
+安装最新通过检查的 `main` 构建，无需 Go 工具链。
+
 ![fornax studio 中的本地聊天](assets/screens/studio-chat.gif)
 
 ## Studio

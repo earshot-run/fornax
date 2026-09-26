@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -102,5 +103,87 @@ func TestUpgradeBinaryRejectsTampered(t *testing.T) {
 	got, _ := os.ReadFile(exe)
 	if string(got) != "old" {
 		t.Fatal("the old binary was overwritten by an unverified download")
+	}
+}
+
+func TestUpgradeChannel(t *testing.T) {
+	oldVersion, oldAPI, oldMainURL := version, releaseAPI, mainBuildURL
+	t.Cleanup(func() { version, releaseAPI, mainBuildURL = oldVersion, oldAPI, oldMainURL })
+	for _, tc := range []struct {
+		name, installed, available, want string
+	}{
+		{"main-new", "main-" + strings.Repeat("f", 40), "main-" + strings.Repeat("a", 40), "available"},
+		{"main-current", "main-" + strings.Repeat("a", 40), "main-" + strings.Repeat("a", 40), "up to date"},
+		{"stable-new", "v1.0.0", "v1.1.0", "available"},
+		{"stable-older", "v2.0.0", "v1.1.0", "a different release exists"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var requests []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				requests = append(requests, r.URL.Path)
+				mu.Unlock()
+				switch r.URL.Path {
+				case "/main-build/version.txt":
+					fmt.Fprintln(w, tc.available)
+				case "/releases/latest", "/releases/tags/" + tc.available:
+					fmt.Fprintf(w, `{"tag_name":%q}`, tc.available)
+				default:
+					http.Error(w, "unexpected request", http.StatusBadRequest)
+				}
+			}))
+			defer srv.Close()
+			version, releaseAPI, mainBuildURL = tc.installed, srv.URL+"/releases/latest", srv.URL+"/main-build/version.txt"
+			out := captureUpgradeCheck(t)
+			if !strings.Contains(out, tc.want) || !strings.Contains(out, tc.available) {
+				t.Fatalf("got %q, want %q and %q", out, tc.want, tc.available)
+			}
+			want := "/releases/latest"
+			if strings.HasPrefix(tc.installed, "main-") {
+				want = "/main-build/version.txt,/releases/tags/" + tc.available
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if strings.Join(requests, ",") != want {
+				t.Fatalf("channel requests %v, want %s", requests, want)
+			}
+		})
+	}
+}
+
+func captureUpgradeCheck(t *testing.T) string {
+	t.Helper()
+	out, err := os.CreateTemp(t.TempDir(), "stdout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	stdout := os.Stdout
+	os.Stdout = out
+	defer func() { os.Stdout = stdout }()
+	if err := cmdUpgrade(context.Background(), []string{"-check"}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(out.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func TestLatestMainTagRejectsInvalidPointer(t *testing.T) {
+	oldURL := mainBuildURL
+	t.Cleanup(func() { mainBuildURL = oldURL })
+	for _, value := range []string{"", "v1.0.0", "main-xyz", "main-" + strings.Repeat("a", 41)} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprintln(w, value)
+		}))
+		mainBuildURL = srv.URL
+		_, err := latestMainTag(context.Background())
+		srv.Close()
+		if err == nil || !strings.Contains(err.Error(), "invalid main build") {
+			t.Fatalf("pointer %q: got %v", value, err)
+		}
 	}
 }

@@ -1,11 +1,5 @@
 package main
 
-// `fornax version` prints the build stamp; `fornax upgrade` checks the
-// latest GitHub release and, on unix, swaps the running binary for the new
-// asset after checking it against the release's sha256sums.txt. Release
-// builds stamp version via -ldflags "-X main.version=$GITHUB_REF_NAME"
-// (see .github/workflows/release.yml).
-
 import (
 	"context"
 	"crypto/sha256"
@@ -31,9 +25,10 @@ var version = "dev"
 
 // Overridable in tests — the real values hit api.github.com.
 var (
-	releaseAPI  = "https://api.github.com/repos/earshot-run/fornax/releases/latest"
-	releaseRepo = "earshot-run/fornax"
-	installHint = "go install github.com/earshot-run/fornax@latest"
+	releaseAPI   = "https://api.github.com/repos/earshot-run/fornax/releases/latest"
+	releaseRepo  = "earshot-run/fornax"
+	mainBuildURL = "https://github.com/earshot-run/fornax/releases/download/main-build/version.txt"
+	installHint  = "go install github.com/earshot-run/fornax@main"
 )
 
 func cmdVersion(args []string) error {
@@ -65,37 +60,68 @@ func cmdUpgrade(ctx context.Context, args []string) error {
 		return fmt.Errorf("usage: fornax upgrade [-check]")
 	}
 	if version == "dev" {
-		fmt.Println("dev build — upgrade tracks tagged releases only")
+		fmt.Println("dev build — rerun go install github.com/earshot-run/fornax@main to update")
 		return nil
 	}
-	rel, err := latestRelease(ctx, releaseAPI)
+	api := releaseAPI
+	mainBuild := strings.HasPrefix(version, "main-")
+	if mainBuild {
+		tag, err := latestMainTag(ctx)
+		if err != nil {
+			return err
+		}
+		api = strings.TrimSuffix(releaseAPI, "/latest") + "/tags/" + tag
+	}
+	rel, err := latestRelease(ctx, api)
 	if err != nil {
 		return err
 	}
-	latest := strings.TrimPrefix(rel.TagName, "v")
-	current := strings.TrimPrefix(version, "v")
+	latest := rel.TagName
+	current := version
 	switch {
 	case latest == "":
 		fmt.Println("no releases yet")
 		return nil
 	case latest == current:
-		fmt.Printf("fornax is up to date (v%s)\n", current)
+		fmt.Printf("fornax is up to date (%s)\n", current)
 		return nil
-	case compareVersions(latest, current) <= 0:
-		fmt.Printf("a different release exists (v%s, you run v%s)\n", latest, current)
+	case !mainBuild && compareVersions(strings.TrimPrefix(latest, "v"), strings.TrimPrefix(current, "v")) <= 0:
+		fmt.Printf("a different release exists (%s, you run %s)\n", latest, current)
 		if rel.HTMLURL != "" {
 			fmt.Println(ui.Dim(rel.HTMLURL))
 		}
 		return nil
 	}
 	if *check {
-		fmt.Printf("v%s available (you run v%s)\n", latest, current)
+		fmt.Printf("%s available (you run %s)\n", latest, current)
 		if rel.HTMLURL != "" {
 			fmt.Println(ui.Dim(rel.HTMLURL))
 		}
 		return nil
 	}
 	return performUpgrade(ctx, rel, latest)
+}
+
+func latestMainTag(ctx context.Context) (string, error) {
+	body, err := fetchBody(ctx, mainBuildURL)
+	var payload []byte
+	if err == nil {
+		payload, err = io.ReadAll(io.LimitReader(body, 128))
+		body.Close()
+	} else if ghAvailable() {
+		payload, err = exec.CommandContext(ctx, "gh", "release", "download", "main-build",
+			"--repo", releaseRepo, "-p", "version.txt", "-O", "-").Output()
+	}
+	if err != nil {
+		return "", fmt.Errorf("could not find the latest main build: %w", err)
+	}
+	tag := strings.TrimSpace(string(payload))
+	sha, ok := strings.CutPrefix(tag, "main-")
+	decoded, err := hex.DecodeString(sha)
+	if !ok || err != nil || len(decoded) != 20 {
+		return "", fmt.Errorf("invalid main build version %q", tag)
+	}
+	return tag, nil
 }
 
 func latestRelease(ctx context.Context, api string) (*ghRelease, error) {
@@ -114,7 +140,7 @@ func latestRelease(ctx context.Context, api string) (*ghRelease, error) {
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusForbidden {
 		io.Copy(io.Discard, resp.Body)
 		// Anonymous API can't see a private repo — gh carries auth.
-		if rel, err := ghLatestRelease(ctx); err == nil {
+		if rel, err := ghLatestRelease(ctx, api); err == nil {
 			return rel, nil
 		}
 		return &ghRelease{}, nil
@@ -156,8 +182,8 @@ func ghAvailable() bool {
 	return exec.Command("gh", "auth", "status").Run() == nil
 }
 
-func ghLatestRelease(ctx context.Context) (*ghRelease, error) {
-	out, err := exec.CommandContext(ctx, "gh", "api", "repos/"+releaseRepo+"/releases/latest").Output()
+func ghLatestRelease(ctx context.Context, api string) (*ghRelease, error) {
+	out, err := exec.CommandContext(ctx, "gh", "api", api).Output()
 	if err != nil {
 		return nil, err
 	}
@@ -208,7 +234,7 @@ func performUpgrade(ctx context.Context, rel *ghRelease, latest string) error {
 	assetURL := findAsset(rel, asset)
 	sumsURL := findAsset(rel, "sha256sums.txt")
 	if assetURL == "" || sumsURL == "" {
-		fmt.Printf("v%s exists but ships no %s build — %s\n", latest, asset, installHint)
+		fmt.Printf("%s exists but ships no %s build — %s\n", latest, asset, installHint)
 		return nil
 	}
 	exe, err := os.Executable()
@@ -220,14 +246,14 @@ func performUpgrade(ctx context.Context, rel *ghRelease, latest string) error {
 		return err
 	}
 	if runtime.GOOS == "windows" {
-		fmt.Printf("v%s is out — download %s and replace %s\n", latest, assetURL, exe)
+		fmt.Printf("%s is out — download %s and replace %s\n", latest, assetURL, exe)
 		return nil
 	}
 	fmt.Fprintf(os.Stderr, "%s\n", ui.Dim("downloading fornax "+rel.TagName))
 	if err := upgradeBinary(ctx, rel, asset, exe); err != nil {
 		return err
 	}
-	fmt.Printf("%s fornax v%s → v%s\n", ui.Green("✓"), current(), latest)
+	fmt.Printf("%s fornax %s → %s\n", ui.Green("✓"), version, latest)
 	return nil
 }
 
@@ -294,10 +320,6 @@ func upgradeBinary(ctx context.Context, rel *ghRelease, asset, exe string) error
 		return fmt.Errorf("could not replace %s — %w (try sudo, or %s)", exe, err, installHint)
 	}
 	return nil
-}
-
-func current() string {
-	return strings.TrimPrefix(version, "v")
 }
 
 func fetchBody(ctx context.Context, url string) (io.ReadCloser, error) {

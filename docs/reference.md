@@ -72,21 +72,30 @@ that long without a request), `-no-connect`, `--events`.
 curl -fsSL https://raw.githubusercontent.com/earshot-run/fornax/main/install.sh | sh
 ```
 
-The installer downloads the latest release binary for your platform (macOS
+The installer downloads the latest successful `main` build for your platform (macOS
 arm64/x86_64, Linux x86_64/arm64), verifies it against the release's
 `sha256sums.txt`, and puts it in `~/.local/bin` (override with
 `FORNAX_INSTALL`). Windows: download `fornax-windows-*.exe` from
-[Releases](https://github.com/earshot-run/fornax/releases).
+[Latest main build](https://github.com/earshot-run/fornax/releases/tag/main-build),
+then follow its link to the binaries.
+
+CI publishes a commit-named prerelease only after checks pass, then updates
+the `main-build` channel. Each install resolves that channel once so its
+binary and checksum belong to the same commit, even during publication.
+`fornax version` prints `main-<commit SHA>`. Rerun the installer to move an
+older tagged install onto `main`. To install a specific release instead,
+use `curl -fsSL https://raw.githubusercontent.com/earshot-run/fornax/main/install.sh | FORNAX_TAG=<tag> sh`.
 
 From source needs only a Go toolchain — pure stdlib, one static binary:
 
 ```sh
-go install github.com/earshot-run/fornax@latest
+go install github.com/earshot-run/fornax@main
 ```
 
-`fornax upgrade` self-updates a release install in place; `-check` only
-reports. The installer uses `gh` when it's authenticated, or downloads the
-public release with curl otherwise. Shell completions:
+`fornax upgrade` self-updates in place: `main` builds follow the latest
+successful `main` build, and tagged versions keep following stable releases.
+`-check` only reports. The installer uses `gh` when it's authenticated,
+or downloads the public release with curl otherwise. Shell completions:
 `fornax completion zsh|bash|fish`.
 
 ## How it connects to Earshot

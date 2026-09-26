@@ -1,6 +1,11 @@
 name: release
 
 on:
+  workflow_call:
+    inputs:
+      main-build:
+        type: boolean
+        default: false
   push:
     tags: ["v*"]
 
@@ -9,7 +14,12 @@ permissions:
 
 jobs:
   release:
+    concurrency:
+      group: release-${{ inputs.main-build && 'main-build' || github.ref_name }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ inputs.main-build && format('main-{0}', github.sha) || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -22,10 +32,41 @@ jobs:
             os=${t%/*}; arch=${t#*/}
             out=fornax-$os-$arch
             [ "$os" = windows ] && out=$out.exe
-            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w -X main.version=$GITHUB_REF_NAME" -o "dist/$out" . || exit 1
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w -X main.version=${RELEASE_TAG}" -o "dist/$out" . || exit 1
           done
-          cd dist && sha256sum * > sha256sums.txt
+          cd dist && sha256sum -- * > sha256sums.txt
       - name: publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
+          MAIN_BUILD: ${{ inputs.main-build }}
+        run: |
+          if [ "$MAIN_BUILD" != true ]; then
+            gh release create "$RELEASE_TAG" dist/* --title "$RELEASE_TAG" --generate-notes
+            exit 0
+          fi
+          if gh release view main-build >/dev/null 2>&1; then
+            published=$(gh release download main-build -p version.txt -O -)
+            status=$(gh api "repos/$GITHUB_REPOSITORY/compare/${published#main-}...$GITHUB_SHA" --jq .status)
+            if [ "$status" != ahead ] && [ "$status" != identical ]; then
+              echo "Keeping $published; this run does not advance the published main build."
+              exit 0
+            fi
+          fi
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --draft --prerelease \
+              --title "$RELEASE_TAG" --notes "Built from main commit $GITHUB_SHA after CI passed."
+          fi
+          if [ "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true ]; then
+            gh release upload "$RELEASE_TAG" dist/* --clobber
+            gh release edit "$RELEASE_TAG" --draft=false --prerelease --latest=false
+          fi
+          printf '%s\n' "$RELEASE_TAG" > version.txt
+          if ! gh release view main-build >/dev/null 2>&1; then
+            gh release create main-build version.txt --target "$GITHUB_SHA" --prerelease --latest=false \
+              --title 'Latest main build' --notes 'The installer follows version.txt to the latest successful main build.'
+          else
+            gh release upload main-build version.txt --clobber
+          fi
+          printf 'Latest successful main build: [%s](https://github.com/%s/releases/tag/%s).\n' \
+            "$RELEASE_TAG" "$GITHUB_REPOSITORY" "$RELEASE_TAG" > main-notes.md
+          gh release edit main-build --notes-file main-notes.md

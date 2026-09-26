@@ -1,11 +1,13 @@
 #!/bin/sh
-# fornax installer — fetches the latest GitHub release binary for this
+# fornax installer — fetches the latest successful main build for this
 # platform, verifies it against the release's sha256sums.txt, and puts it on
 # PATH. Usage: curl -fsSL https://raw.githubusercontent.com/earshot-run/fornax/main/install.sh | sh
 set -eu
 
 REPO=earshot-run/fornax
 DEST="${FORNAX_INSTALL:-$HOME/.local/bin}"
+TAG="${FORNAX_TAG:-}"
+RELEASES="${FORNAX_RELEASES:-https://github.com/$REPO/releases/download}"
 
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
@@ -23,33 +25,42 @@ ASSET="fornax-$OS-$ARCH"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-# gh reaches private repos; anonymous curl works once the repo is public.
-# FORNAX_TAG / FORNAX_BASE override the lookup — used by the script's test.
+USE_GH=false
 if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-	TAG="${FORNAX_TAG:-$(gh release view --repo "$REPO" --json tagName --jq .tagName)}"
-	echo "downloading $ASSET ($TAG)"
+	USE_GH=true
+else
+	command -v curl >/dev/null 2>&1 || { echo "install needs curl" >&2; exit 1; }
+fi
+
+# Resolve once so the binary and checksum still match during a channel update.
+if [ -z "$TAG" ]; then
+	if [ "$USE_GH" = true ]; then
+		TAG=$(gh release download main-build --repo "$REPO" -p version.txt -O -)
+	else
+		TAG=$(curl -fsSL --retry 3 "$RELEASES/main-build/version.txt")
+	fi
+	SHA=${TAG#main-}
+	case "$SHA" in
+	"$TAG"|*[!0-9a-f]*) echo "invalid main build version: $TAG" >&2; exit 1 ;;
+	esac
+	[ "${#SHA}" -eq 40 ] || { echo "invalid main build version: $TAG" >&2; exit 1; }
+fi
+
+echo "downloading $ASSET ($TAG)"
+if [ "$USE_GH" = true ]; then
 	gh release download "$TAG" --repo "$REPO" -p "$ASSET" -p sha256sums.txt --dir "$TMP" --clobber
 else
-	need() { command -v "$1" >/dev/null 2>&1 || { echo "install needs $1" >&2; exit 1; }; }
-	need curl
-	TAG="${FORNAX_TAG:-$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)}"
-	if [ -z "$TAG" ]; then
-		echo "no fornax release reachable — the repo may be private (try \`gh auth login\`)," >&2
-		echo "or build from source: go install github.com/$REPO@latest" >&2
-		exit 1
-	fi
-	BASE="${FORNAX_BASE:-https://github.com/$REPO/releases/download/$TAG}"
-	echo "downloading $ASSET ($TAG)"
+	BASE="${FORNAX_BASE:-$RELEASES/$TAG}"
 	curl -fsSL "$BASE/$ASSET" -o "$TMP/$ASSET"
 	curl -fsSL "$BASE/sha256sums.txt" -o "$TMP/sha256sums.txt"
 fi
 
 cd "$TMP"
 if command -v sha256sum >/dev/null 2>&1; then
-	grep " $ASSET\$" sha256sums.txt | sha256sum -c - >/dev/null
+	awk -v asset="$ASSET" '$2 == asset { print }' sha256sums.txt | sha256sum -c - >/dev/null
 else
 	# macOS ships shasum, not sha256sum
-	grep " $ASSET\$" sha256sums.txt | shasum -a 256 -c - >/dev/null
+	awk -v asset="$ASSET" '$2 == asset { print }' sha256sums.txt | shasum -a 256 -c - >/dev/null
 fi
 
 mkdir -p "$DEST"
