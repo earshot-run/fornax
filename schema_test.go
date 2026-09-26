@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/earshot-run/fornax/internal/modelrt"
 )
 
 // Live check against installed models — run with FORNAX_LIVE=1.
@@ -16,7 +18,7 @@ func TestSchemaLive(t *testing.T) {
 		t.Skip("set FORNAX_LIVE=1 to run against real models")
 	}
 	ctx := context.Background()
-	spec, eng, err := resolve(ctx, "hf:Qwen/Qwen3-4B-GGUF")
+	spec, eng, err := modelrt.Resolve(ctx, "hf:Qwen/Qwen3-4B-GGUF")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,13 +10,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/earshot-run/fornax/internal/catalog"
+	"github.com/earshot-run/fornax/internal/modelrt"
 	"github.com/earshot-run/fornax/internal/openai"
 	"github.com/earshot-run/fornax/internal/ui"
 )
@@ -43,8 +43,8 @@ func cmdEmbed(ctx context.Context, args []string) error {
 	if text == "" {
 		return fmt.Errorf("usage: fornax embed <model> <text…>")
 	}
-	return withServer(ctx, spec, eng, func(url, key string) error {
-		vec, err := embedOnce(ctx, url, key, spec.ID, text)
+	return modelrt.WithServer(ctx, spec, eng, func(url, key string) error {
+		vec, err := openai.Embed(ctx, url, key, spec.ID, text)
 		if err != nil {
 			return err
 		}
@@ -58,47 +58,10 @@ func cmdEmbed(ctx context.Context, args []string) error {
 	})
 }
 
-// One embeddings call; returns the pooled vector.
-func embedOnce(ctx context.Context, url, key, model, text string) ([]float64, error) {
-	body, _ := json.Marshal(map[string]any{
-		"model": model,
-		"input": text,
-	})
-	resp, err := openai.Post(ctx, url+"/embeddings", key, body)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, openai.Error(resp)
-	}
-	var parsed struct {
-		Data []struct {
-			Embedding json.RawMessage `json:"embedding"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, openai.MaxBody)).Decode(&parsed); err != nil {
-		return nil, fmt.Errorf("the reply was not readable: %w", err)
-	}
-	if len(parsed.Data) == 0 {
-		return nil, fmt.Errorf("the server returned no embedding")
-	}
-	var vec []float64
-	if err := json.Unmarshal(parsed.Data[0].Embedding, &vec); err == nil {
-		return vec, nil
-	}
-	// Some builds wrap the pooled vector in an extra array.
-	var rows [][]float64
-	if err := json.Unmarshal(parsed.Data[0].Embedding, &rows); err == nil && len(rows) == 1 {
-		return rows[0], nil
-	}
-	return nil, fmt.Errorf("the server returned an embedding shape fornax cannot read")
-}
-
 func runEmbedTest(ctx context.Context, spec *catalog.Spec, eng *catalog.EngineSpec) error {
-	return withServer(ctx, spec, eng, func(url, key string) error {
+	return modelrt.WithServer(ctx, spec, eng, func(url, key string) error {
 		started := time.Now()
-		vec, err := embedOnce(ctx, url, key, spec.ID, "Reply with exactly: ok")
+		vec, err := openai.Embed(ctx, url, key, spec.ID, "Reply with exactly: ok")
 		elapsed := time.Since(started)
 		if err != nil {
 			return err
@@ -111,11 +74,11 @@ func runEmbedTest(ctx context.Context, spec *catalog.Spec, eng *catalog.EngineSp
 // Median request latency over a handful of identical embed calls.
 func runEmbedBench(ctx context.Context, spec *catalog.Spec, eng *catalog.EngineSpec, runs int) error {
 	const probe = "The quick brown fox jumps over the lazy dog."
-	return withServer(ctx, spec, eng, func(url, key string) error {
+	return modelrt.WithServer(ctx, spec, eng, func(url, key string) error {
 		var lat []float64
 		for i := 0; i < runs; i++ {
 			started := time.Now()
-			if _, err := embedOnce(ctx, url, key, spec.ID, probe); err != nil {
+			if _, err := openai.Embed(ctx, url, key, spec.ID, probe); err != nil {
 				return err
 			}
 			ms := float64(time.Since(started)) / float64(time.Millisecond)

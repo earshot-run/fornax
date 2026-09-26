@@ -25,14 +25,15 @@ import (
 	"time"
 
 	"github.com/earshot-run/fornax/internal/catalog"
+	"github.com/earshot-run/fornax/internal/modelrt"
 	"github.com/earshot-run/fornax/internal/openai"
 	"github.com/earshot-run/fornax/internal/paths"
 	"github.com/earshot-run/fornax/internal/ui"
 )
 
-// Overridable in tests — the real values hit the public hosts.
+// Overridable in tests — the real values hit the public hosts. Hugging
+// Face's is modelrt.HFHost, which pinning a ref resolves against too.
 var (
-	hfHost = "https://huggingface.co"
 	ghHost = "https://github.com"
 	ghAPI  = "https://api.github.com"
 )
@@ -139,8 +140,8 @@ func cmdPins(ctx context.Context, args []string) error {
 	}
 	if only == "" {
 		noteLatestEngine(ctx, "ggml-org/llama.cpp", catalog.EngineVersion)
-		if len(sdEngines) > 0 {
-			for _, variants := range sdEngines {
+		if sd := modelrt.SDEngines(); len(sd) > 0 {
+			for _, variants := range sd {
 				if _, _, tag, _, ok := parseGHRelease(variants[0].URL); ok {
 					noteLatestEngine(ctx, "leejet/stable-diffusion.cpp", tag)
 				}
@@ -194,20 +195,15 @@ func pinJobs(only string) ([]pinJob, error) {
 		}
 	}
 	if only != "" {
-		spec := model(only)
+		spec := modelrt.Model(only)
 		if spec == nil {
 			return nil, fmt.Errorf("unknown model %q — `fornax list` shows what is saved", only)
 		}
 		addSpec(spec)
 		return jobs, nil
 	}
-	for _, spec := range catalog.Models() {
+	for _, spec := range modelrt.AllSpecs(paths.Home()) {
 		addSpec(spec)
-	}
-	if store, err := loadCustoms(paths.Home()); err == nil {
-		for i := range store.Models {
-			addSpec(store.Models[i].spec())
-		}
 	}
 	// Every build on every platform, and every part of each build.
 	addEngine := func(engines map[string][]*catalog.EngineSpec) {
@@ -236,18 +232,11 @@ func pinJobs(only string) ([]pinJob, error) {
 		}
 	}
 	addEngine(catalog.Engines())
-	addEngine(sdEngines)
-	for _, src := range []struct {
-		name string
-		pin  *catalog.Pin
-		url  string
-	}{
-		{"kev", &kevSource, kevSourceURL},
-		{"laya", &layaSource, layaSourceURL},
-	} {
-		jobs = append(jobs, pinJob{id: src.name + " source", file: src.pin.File,
+	addEngine(modelrt.SDEngines())
+	for _, src := range modelrt.Sources() {
+		jobs = append(jobs, pinJob{id: src.Name + " source", file: src.Pin.File,
 			check: func(ctx context.Context) pinRow {
-				return auditSource(ctx, src.name, src.pin, src.url)
+				return auditSource(ctx, src.Name, &src.Pin, src.URL)
 			}})
 	}
 	return jobs, nil
@@ -281,7 +270,7 @@ func runPinJobs(ctx context.Context, jobs []pinJob) []pinRow {
 // x-linked-size, the commit it resolves to in x-repo-commit. Non-LFS files
 // carry none of those and get fetched and hashed instead.
 func auditHF(ctx context.Context, spec *catalog.Spec, pin *catalog.Pin) pinRow {
-	url := fmt.Sprintf("%s/%s/resolve/main/%s", hfHost, spec.Repo, pin.File)
+	url := fmt.Sprintf("%s/%s/resolve/main/%s", modelrt.HFHost, spec.Repo, pin.File)
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
 	if err != nil {
 		return pinRow{verdict: pinError, note: err.Error()}

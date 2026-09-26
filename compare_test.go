@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/earshot-run/fornax/internal/modelrt"
 )
 
 // Live check against installed models — run with FORNAX_LIVE=1.
@@ -23,10 +26,8 @@ func TestCompareLive(t *testing.T) {
 func TestCompareRejectsKev(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("FORNAX_HOME", root)
-	if err := saveCustoms(root, &customStore{Models: []customEntry{{
-		ID: "t1", Kind: "text", Repo: "o/r", Revision: "abc123",
-		File: "f.gguf", Bytes: 1, SHA256: "0",
-	}}}); err != nil {
+	saved := `{"version":1,"models":[{"id":"t1","kind":"text","repo":"o/r","revision":"abc123","file":"f.gguf","bytes":1,"sha256":"0"}]}`
+	if err := os.WriteFile(filepath.Join(root, modelrt.CustomFile), []byte(saved), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	err := cmdCompare(context.Background(),

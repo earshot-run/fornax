@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/earshot-run/fornax/internal/catalog"
+	"github.com/earshot-run/fornax/internal/modelrt"
 	"github.com/earshot-run/fornax/internal/openai"
 )
 
@@ -71,7 +72,7 @@ func structuredExtra(jsonFlag, schemaPath string) (map[string]any, error) {
 
 func askStructured(ctx context.Context, spec *catalog.Spec, eng *catalog.EngineSpec, prompt string, extra map[string]any) (string, error) {
 	var text string
-	err := withServer(ctx, spec, eng, func(url, key string) error {
+	err := modelrt.WithServer(ctx, spec, eng, func(url, key string) error {
 		reply, err := openai.OnceFull(ctx, url, key, spec.ID,
 			[]openai.Message{openai.TextMessage("user", prompt)}, -1, extra)
 		if err != nil {

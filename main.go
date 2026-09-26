@@ -18,6 +18,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/earshot-run/fornax/internal/mcp"
 	"github.com/earshot-run/fornax/internal/ui"
 )
 
@@ -113,6 +114,13 @@ func commands() []command {
 		{"completion", func(_ context.Context, args []string) error { return cmdCompletion(args) }},
 		{"__complete_models", func(context.Context, []string) error { return cmdCompleteModels() }},
 	}
+}
+
+func cmdMCP(ctx context.Context, args []string) error {
+	if len(args) > 0 {
+		return fmt.Errorf("usage: fornax mcp   (serves MCP on stdin/stdout)")
+	}
+	return mcp.Run(ctx, version)
 }
 
 func lookup(name string) func(context.Context, []string) error {

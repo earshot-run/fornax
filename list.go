@@ -10,13 +10,14 @@ import (
 	"sync"
 
 	"github.com/earshot-run/fornax/internal/catalog"
+	"github.com/earshot-run/fornax/internal/modelrt"
 	"github.com/earshot-run/fornax/internal/paths"
 	"github.com/earshot-run/fornax/internal/ui"
 )
 
 func fitLabel(spec *catalog.Spec, memory int64) (string, func(string) string) {
 	if spec.Runtime == catalog.Apple {
-		if appleSupported() == nil {
+		if modelrt.AppleSupported() == nil {
 			return "fits", ui.Green
 		}
 		return "needs macOS 26+", ui.Red
@@ -61,13 +62,13 @@ func cmdList(args []string) error {
 	if set.NArg() != 0 {
 		return fmt.Errorf("usage: fornax list [--local] [--json]")
 	}
-	memory := memoryBytes()
+	memory := modelrt.MemoryBytes()
 	root := paths.Home()
-	specs := allSpecs(root)
+	specs := modelrt.AllSpecs(root)
 	if *local {
 		var kept []*catalog.Spec
 		for _, spec := range specs {
-			if modelInstalled(root, spec) {
+			if modelrt.Installed(root, spec) {
 				kept = append(kept, spec)
 			}
 		}
@@ -84,7 +85,7 @@ func cmdList(args []string) error {
 			probes.Add(1)
 			go func(i int, spec *catalog.Spec) {
 				defer probes.Done()
-				live[i] = isServing(spec, cfg.APIKey)
+				live[i] = modelrt.IsServing(spec, cfg.APIKey)
 			}(i, spec)
 		}
 		probes.Wait()
@@ -113,7 +114,7 @@ func cmdList(args []string) error {
 				Summary   string `json:"summary"`
 			}{spec.ID, spec.Name, spec.Kind.String(), spec.Runtime.String(), spec.Maker, spec.Params, spec.Quant(),
 				catalog.NeededBytes(spec.SizeBytes()), memory, spec.ID == catalog.StarterModel, spec.SizeBytes(), paths.ModelPartialBytes(root, spec), fit,
-				modelInstalled(root, spec), live[i], spec.Port,
+				modelrt.Installed(root, spec), live[i], spec.Port,
 				spec.Repo, spec.Model.Revision, spec.Summary})
 		}
 		return nil
@@ -134,7 +135,7 @@ func cmdList(args []string) error {
 	for _, spec := range specs {
 		var status string
 		switch partial := paths.ModelPartialBytes(root, spec); {
-		case modelInstalled(root, spec):
+		case modelrt.Installed(root, spec):
 			status = ui.MarkOK() + " installed"
 		case partial > 0:
 			status = ui.Yellow("◐") + fmt.Sprintf(" %d%%", partial*100/spec.TotalBytes())
@@ -155,7 +156,7 @@ func cmdList(args []string) error {
 		fmt.Printf("  %s %s\n", ui.Cell("", idWidth, nil), ui.Dim(spec.Summary))
 	}
 	engineState := "unsupported platform"
-	if eng, err := llamaEngine(); err == nil {
+	if eng, err := modelrt.LlamaEngine(); err == nil {
 		engineState = "supported, " + string(eng.Backend)
 	}
 	fmt.Printf("\n  %s\n", ui.Dim(fmt.Sprintf("this machine: %s RAM · llama.cpp %s (%s)",

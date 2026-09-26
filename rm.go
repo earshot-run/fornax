@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/earshot-run/fornax/internal/catalog"
+	"github.com/earshot-run/fornax/internal/modelrt"
 	"github.com/earshot-run/fornax/internal/paths"
 	"github.com/earshot-run/fornax/internal/ui"
 )
@@ -26,7 +27,7 @@ func cmdRm(args []string) error {
 			return fmt.Errorf("%s", rmUsage)
 		}
 		// Anything with a directory, so a half-finished download goes too.
-		for _, spec := range allSpecs(root) {
+		for _, spec := range modelrt.AllSpecs(root) {
 			if _, err := os.Stat(paths.ModelDir(root, spec)); err == nil {
 				ids = append(ids, spec.ID)
 			}
@@ -54,23 +55,23 @@ func cmdRm(args []string) error {
 }
 
 func removeModel(root, id string) (int64, error) {
-	spec := model(id)
+	spec := modelrt.Model(id)
 	if spec == nil {
-		return 0, unknownModel(id)
+		return 0, modelrt.UnknownModel(id)
 	}
 	dir := paths.ModelDir(root, spec)
-	custom := customSpec(root, spec.ID) != nil
+	custom := modelrt.IsCustom(root, spec.ID)
 	if _, err := os.Stat(dir); os.IsNotExist(err) && !custom {
 		fmt.Printf("%s %s is not installed\n", ui.MarkIdle(), spec.ID)
 		return 0, nil
 	}
-	freed := dirSize(dir)
+	freed := modelrt.DirSize(dir)
 	if err := os.RemoveAll(dir); err != nil {
 		return 0, fmt.Errorf("could not remove %s: %w", spec.Name, err)
 	}
 	if custom {
-		if err := dropCustom(root, spec.ID); err != nil {
-			return freed, fmt.Errorf("removed files but could not update %s: %w", customFile, err)
+		if err := modelrt.DropCustom(root, spec.ID); err != nil {
+			return freed, fmt.Errorf("removed files but could not update %s: %w", modelrt.CustomFile, err)
 		}
 	}
 	fmt.Printf("%s %s removed %s\n", ui.Green("✓"), spec.ID, ui.Dim("("+ui.HumanSize(freed)+")"))

@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/earshot-run/fornax/internal/modelrt"
 )
 
 func TestParseFlexibleTakesPositionalsBeforeOrAfterFlags(t *testing.T) {
@@ -41,9 +43,9 @@ func TestPullHFAcceptsFlagsAfterTheReference(t *testing.T) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer srv.Close()
-	old := hfHost
-	hfHost = srv.URL
-	defer func() { hfHost = old }()
+	old := modelrt.HFHost
+	modelrt.HFHost = srv.URL
+	defer func() { modelrt.HFHost = old }()
 	t.Setenv("FORNAX_HOME", t.TempDir())
 	for _, args := range [][]string{
 		{"hf:Org/Repo/File.gguf", "--kind", "vision"},

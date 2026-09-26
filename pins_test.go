@@ -9,12 +9,13 @@ import (
 	"testing"
 
 	"github.com/earshot-run/fornax/internal/catalog"
+	"github.com/earshot-run/fornax/internal/modelrt"
 )
 
 func TestParseGHRelease(t *testing.T) {
 	owner, repo, tag, asset, ok := parseGHRelease(
-		ghHost + "/jaredpalmer/kev/releases/download/kev-family/kev-4b-qwen3.tar.gz")
-	if !ok || owner != "jaredpalmer" || repo != "kev" || tag != "kev-family" || asset != "kev-4b-qwen3.tar.gz" {
+		ghHost + "/jaredpalmer/kev/releases/download/kev-family/kev-4b.tar.gz")
+	if !ok || owner != "jaredpalmer" || repo != "kev" || tag != "kev-family" || asset != "kev-4b.tar.gz" {
 		t.Fatalf("parseGHRelease = %q %q %q %q %v", owner, repo, tag, asset, ok)
 	}
 	for _, bad := range []string{
@@ -64,9 +65,9 @@ func TestAuditHFFresh(t *testing.T) {
 	sum := fmt.Sprintf("%x", sha256.Sum256(payload))
 	srv := fakeHF(t, true, sum, fmt.Sprint(len(payload)), "newcommit", payload)
 	defer srv.Close()
-	old := hfHost
-	hfHost = srv.URL
-	defer func() { hfHost = old }()
+	old := modelrt.HFHost
+	modelrt.HFHost = srv.URL
+	defer func() { modelrt.HFHost = old }()
 
 	spec, pin := hfSpecPin()
 	pin.Bytes = int64(len(payload))
@@ -84,9 +85,9 @@ func TestAuditHFRepoMovedFileSame(t *testing.T) {
 	sum := fmt.Sprintf("%x", sha256.Sum256(payload))
 	srv := fakeHF(t, true, sum, fmt.Sprint(len(payload)), "newcommit", payload)
 	defer srv.Close()
-	old := hfHost
-	hfHost = srv.URL
-	defer func() { hfHost = old }()
+	old := modelrt.HFHost
+	modelrt.HFHost = srv.URL
+	defer func() { modelrt.HFHost = old }()
 
 	spec, pin := hfSpecPin()
 	pin.Bytes = int64(len(payload))
@@ -102,9 +103,9 @@ func TestAuditHFMoved(t *testing.T) {
 	sum := fmt.Sprintf("%x", sha256.Sum256(payload))
 	srv := fakeHF(t, true, sum, fmt.Sprint(len(payload)), "newcommit", payload)
 	defer srv.Close()
-	old := hfHost
-	hfHost = srv.URL
-	defer func() { hfHost = old }()
+	old := modelrt.HFHost
+	modelrt.HFHost = srv.URL
+	defer func() { modelrt.HFHost = old }()
 
 	spec, pin := hfSpecPin()
 	row := auditHF(context.Background(), spec, pin)
@@ -119,9 +120,9 @@ func TestAuditHFMoved(t *testing.T) {
 func TestAuditHFGone(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	defer srv.Close()
-	old := hfHost
-	hfHost = srv.URL
-	defer func() { hfHost = old }()
+	old := modelrt.HFHost
+	modelrt.HFHost = srv.URL
+	defer func() { modelrt.HFHost = old }()
 
 	spec, pin := hfSpecPin()
 	row := auditHF(context.Background(), spec, pin)
@@ -137,9 +138,9 @@ func TestAuditHFNonLFS(t *testing.T) {
 	sum := fmt.Sprintf("%x", sha256.Sum256(payload))
 	srv := fakeHF(t, false, "", "", "commit1", payload)
 	defer srv.Close()
-	old := hfHost
-	hfHost = srv.URL
-	defer func() { hfHost = old }()
+	old := modelrt.HFHost
+	modelrt.HFHost = srv.URL
+	defer func() { modelrt.HFHost = old }()
 
 	spec, pin := hfSpecPin()
 	pin.Bytes = int64(len(payload))

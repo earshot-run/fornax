@@ -128,12 +128,58 @@ func WriteEngineReceipt(dir, sha256 string) error {
 	return AtomicPrivate(filepath.Join(dir, Receipt), []byte(sha256+"\n"))
 }
 
+// How much of a download has landed. A parallel download writes its
+// ranges at their offsets into a full-size .part, so its sidecar, not the
+// file's size, says how far it got.
 func PartialBytes(path string, expected int64) int64 {
+	if ranges, ok := ReadPartRanges(path); ok {
+		var done int64
+		for _, r := range ranges.Ranges {
+			done += r.Done
+		}
+		return min(done, expected)
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		return 0
 	}
 	return min(info.Size(), expected)
+}
+
+// A parallel download in progress: each byte range of the file (End
+// exclusive) and how much of it has been written.
+type PartRanges struct {
+	Ranges []PartRange `json:"ranges"`
+}
+
+type PartRange struct {
+	Start int64 `json:"start"`
+	End   int64 `json:"end"`
+	Done  int64 `json:"done"`
+}
+
+func PartRangesPath(part string) string {
+	return part + ".ranges"
+}
+
+func ReadPartRanges(part string) (*PartRanges, bool) {
+	raw, err := os.ReadFile(PartRangesPath(part))
+	if err != nil {
+		return nil, false
+	}
+	var r PartRanges
+	if json.Unmarshal(raw, &r) != nil || len(r.Ranges) == 0 {
+		return nil, false
+	}
+	return &r, true
+}
+
+func WritePartRanges(part string, r *PartRanges) error {
+	raw, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	return AtomicPrivate(PartRangesPath(part), raw)
 }
 
 // Total resumable bytes a model already holds across its .part files.
@@ -198,6 +244,27 @@ func AtomicJSON(path string, value any) error {
 type Config struct {
 	Version int    `json:"version"`
 	APIKey  string `json:"apiKey"`
+	// A Hugging Face access token, for gated repos. HF_TOKEN wins over it.
+	HFToken string `json:"hfToken,omitempty"`
+}
+
+// The Hugging Face token to send, or "": HF_TOKEN first, then the one
+// saved in config.json.
+func HFToken() string {
+	if token := strings.TrimSpace(os.Getenv("HF_TOKEN")); token != "" {
+		return token
+	}
+	cfg, err := LoadConfig(Home())
+	if err != nil {
+		return ""
+	}
+	return cfg.HFToken
+}
+
+// Where the token may go: huggingface.co itself, not its CDNs or anyone else.
+func IsHFHost(host string) bool {
+	host = strings.ToLower(host)
+	return host == "huggingface.co" || host == "hf.co"
 }
 
 func LoadConfig(root string) (*Config, error) {

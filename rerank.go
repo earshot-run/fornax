@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/earshot-run/fornax/internal/catalog"
+	"github.com/earshot-run/fornax/internal/modelrt"
 	"github.com/earshot-run/fornax/internal/openai"
 	"github.com/earshot-run/fornax/internal/ui"
 )
@@ -56,14 +57,14 @@ func cmdRerank(ctx context.Context, args []string) error {
 	if len(docs) == 0 {
 		return fmt.Errorf("%s", usageLine)
 	}
-	spec, eng, err := resolve(ctx, id)
+	spec, eng, err := modelrt.Resolve(ctx, id)
 	if err != nil {
 		return err
 	}
 	if spec.Kind != catalog.Rerank {
 		return fmt.Errorf("%s does not rerank — pick a rerank model (`list`)", spec.ID)
 	}
-	return withServer(ctx, spec, eng, func(url, key string) error {
+	return modelrt.WithServer(ctx, spec, eng, func(url, key string) error {
 		hits, err := rerankOnce(ctx, url, key, spec.ID, query, docs, *top)
 		if err != nil {
 			return err
@@ -141,7 +142,7 @@ func shortDoc(doc string) string {
 
 // A rerank model's `test` scores two unrelated docs — the cat should win.
 func runRerankTest(ctx context.Context, spec *catalog.Spec, eng *catalog.EngineSpec) error {
-	return withServer(ctx, spec, eng, func(url, key string) error {
+	return modelrt.WithServer(ctx, spec, eng, func(url, key string) error {
 		hits, err := rerankOnce(ctx, url, key, spec.ID,
 			"what did the cat do",
 			[]string{"the cat sat", "quantum physics"}, 0)

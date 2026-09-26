@@ -1,9 +1,10 @@
 package openai
 
 // Package openai talks to the running model server: one chat-completions
-// client that both the one-shot commands and the interactive REPL share,
-// plus the raw POST the embeddings, rerank and kev clients build on. Content
-// is text by default and gains image/audio parts for vision and audio models.
+// client that both the one-shot commands and the interactive REPL share, the
+// embeddings call, the keyed GET behind readiness and listing probes, and
+// the raw POST the rerank and systemone clients build on. Content is text by
+// default and gains image/audio parts for vision and audio models.
 
 import (
 	"bufio"
@@ -224,4 +225,68 @@ func AudioPart(path string) (map[string]any, error) {
 			"format": format,
 		},
 	}, nil
+}
+
+// Embed makes one /v1/embeddings call and returns the pooled vector.
+func Embed(ctx context.Context, url, key, model, text string) ([]float64, error) {
+	body, _ := json.Marshal(map[string]any{
+		"model": model,
+		"input": text,
+	})
+	resp, err := Post(ctx, url+"/embeddings", key, body)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, Error(resp)
+	}
+	var parsed struct {
+		Data []struct {
+			Embedding json.RawMessage `json:"embedding"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, MaxBody)).Decode(&parsed); err != nil {
+		return nil, fmt.Errorf("the reply was not readable: %w", err)
+	}
+	if len(parsed.Data) == 0 {
+		return nil, fmt.Errorf("the server returned no embedding")
+	}
+	var vec []float64
+	if err := json.Unmarshal(parsed.Data[0].Embedding, &vec); err == nil {
+		return vec, nil
+	}
+	// Some builds wrap the pooled vector in an extra array.
+	var rows [][]float64
+	if err := json.Unmarshal(parsed.Data[0].Embedding, &rows); err == nil && len(rows) == 1 {
+		return rows[0], nil
+	}
+	return nil, fmt.Errorf("the server returned an embedding shape fornax cannot read")
+}
+
+// GetJSON is a keyed GET that decodes a JSON object; nil means the server
+// is down, refused the key, or answered something else.
+func GetJSON(client *http.Client, url, key string) map[string]any {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxBody))
+	if err != nil {
+		return nil
+	}
+	var value map[string]any
+	if json.Unmarshal(body, &value) != nil {
+		return nil
+	}
+	return value
 }

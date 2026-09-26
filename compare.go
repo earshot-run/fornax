@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/earshot-run/fornax/internal/catalog"
+	"github.com/earshot-run/fornax/internal/modelrt"
 	"github.com/earshot-run/fornax/internal/openai"
 	"github.com/earshot-run/fornax/internal/ui"
 )
@@ -42,11 +43,11 @@ func cmdCompare(ctx context.Context, args []string) error {
 			continue
 		}
 		seen[id] = true
-		spec, eng, err := resolve(ctx, id)
+		spec, eng, err := modelrt.Resolve(ctx, id)
 		if err != nil {
 			return err
 		}
-		if err := requireChat(spec); err != nil {
+		if err := modelrt.RequireChat(spec); err != nil {
 			return err
 		}
 		specs = append(specs, spec)
@@ -60,7 +61,7 @@ func cmdCompare(ctx context.Context, args []string) error {
 	failures := 0
 	for i, spec := range specs {
 		res := compareResult{id: spec.ID}
-		err := withServer(ctx, spec, engs[i], func(url, key string) error {
+		err := modelrt.WithServer(ctx, spec, engs[i], func(url, key string) error {
 			started := time.Now()
 			reply, err := openai.Once(ctx, url, key, spec.ID,
 				[]openai.Message{openai.TextMessage("user", prompt)}, -1)

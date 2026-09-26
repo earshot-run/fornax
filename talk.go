@@ -3,8 +3,8 @@ package main
 // `talk` — speech in, speech out. Three legs: an audio model transcribes
 // the take (chat completions with an input_audio part), a text or vision
 // model answers the transcript, and a speech model speaks the reply through
-// llama-tts. Each leg is a normal one-shot — withServer for the two chat
-// calls, runSay for the foreground synth.
+// llama-tts. Each leg is a normal one-shot — WithServer for the two chat
+// calls, RunSay for the foreground synth.
 
 import (
 	"context"
@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/earshot-run/fornax/internal/catalog"
+	"github.com/earshot-run/fornax/internal/modelrt"
 	"github.com/earshot-run/fornax/internal/openai"
 	"github.com/earshot-run/fornax/internal/paths"
 	"github.com/earshot-run/fornax/internal/ui"
@@ -55,7 +56,7 @@ func cmdTalk(ctx context.Context, args []string) error {
 		if err != nil {
 			return nil, nil, err
 		}
-		return resolve(ctx, spec.ID)
+		return modelrt.Resolve(ctx, spec.ID)
 	}
 	sttSpec, sttEng, err := pick(*sttID, "stt", "audio", catalog.Audio)
 	if err != nil {
@@ -76,7 +77,7 @@ func cmdTalk(ctx context.Context, args []string) error {
 	}
 
 	var transcript string
-	if err := withServer(ctx, sttSpec, sttEng, func(url, key string) error {
+	if err := modelrt.WithServer(ctx, sttSpec, sttEng, func(url, key string) error {
 		started := time.Now()
 		reply, err := openai.Once(ctx, url, key, sttSpec.ID, []openai.Message{{
 			Role: "user",
@@ -103,7 +104,7 @@ func cmdTalk(ctx context.Context, args []string) error {
 		prompt = transcript + "\n\n" + question
 	}
 	var answer string
-	if err := withServer(ctx, llmSpec, llmEng, func(url, key string) error {
+	if err := modelrt.WithServer(ctx, llmSpec, llmEng, func(url, key string) error {
 		started := time.Now()
 		reply, err := openai.Once(ctx, url, key, llmSpec.ID,
 			[]openai.Message{openai.TextMessage("user", prompt)}, -1)
@@ -124,16 +125,11 @@ func cmdTalk(ctx context.Context, args []string) error {
 	if outPath == "" {
 		outPath = fmt.Sprintf("talk-%d.wav", time.Now().Unix())
 	}
-	if err := pull(ctx, ttsSpec, ttsEng); err != nil {
+	root, err = modelrt.PrepareSpeech(ctx, ttsSpec, ttsEng)
+	if err != nil {
 		return err
 	}
-	verifying := ui.Spin("verifying " + ttsSpec.ID)
-	if err := rehash(root, ttsSpec); err != nil {
-		verifying.Stop("")
-		return err
-	}
-	verifying.Stop("")
-	return runSay(ctx, root, ttsEng, ttsSpec, answer, outPath, *voice, "en", 0)
+	return modelrt.RunSay(ctx, root, ttsEng, ttsSpec, answer, outPath, *voice, "en", 0)
 }
 
 // The spec for one pipeline leg: the -flag's model validated for the leg's
@@ -148,9 +144,9 @@ func talkSpec(root, flagID, flagName, label string, kinds ...catalog.Modality) (
 		return false
 	}
 	if flagID != "" {
-		spec := model(flagID)
+		spec := modelrt.Model(flagID)
 		if spec == nil {
-			return nil, unknownModel(flagID)
+			return nil, modelrt.UnknownModel(flagID)
 		}
 		if !fits(spec) {
 			return nil, fmt.Errorf("-%s %s is %s, not %s — `fornax list` shows kinds", flagName, spec.ID, spec.Kind, label)
@@ -158,7 +154,7 @@ func talkSpec(root, flagID, flagName, label string, kinds ...catalog.Modality) (
 		return spec, nil
 	}
 	var first *catalog.Spec
-	for _, spec := range allSpecs(root) {
+	for _, spec := range modelrt.AllSpecs(root) {
 		if !fits(spec) {
 			continue
 		}
@@ -179,9 +175,9 @@ func talkSpec(root, flagID, flagName, label string, kinds ...catalog.Modality) (
 // its bridge compiles on pull — but only where it can actually run.
 func talkInstalled(root string, spec *catalog.Spec) bool {
 	if spec.Runtime == catalog.Apple {
-		return appleSupported() == nil
+		return modelrt.AppleSupported() == nil
 	}
-	return modelInstalled(root, spec)
+	return modelrt.Installed(root, spec)
 }
 
 // One collapsed line, at most n runes, for the stderr status lines.

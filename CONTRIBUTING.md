@@ -14,22 +14,21 @@ make matrix    # all six cross-builds (CI runs the same)
 Live tests hit real models and downloads — they are opt-in:
 
 ```sh
-FORNAX_LIVE=1 go test -run 'TestCompareLive|TestSchemaLive|TestEmbedLive'
-FORNAX_LIVE_DRAW=1 go test -run TestDrawLive -timeout 30m   # pulls ~7 GB
+FORNAX_LIVE=1 go test -run 'TestCompareLive|TestSchemaLive|TestEmbedLive' .
 ```
 
 ## Conventions
 
 - Every fetched artifact carries an immutable revision, exact byte count and
-  SHA-256 (`filePin`/`engineSpec`). Verify before install; weights re-hash
-  before every spawn.
+  SHA-256 (`catalog.Pin`/`catalog.EngineSpec`). Verify before install;
+  weights re-hash before every spawn.
 - Status, spinners and progress go to stderr; stdout carries only the
   command's output so pipes stay clean. Styling is TTY-only — `NO_COLOR`,
-  `TERM=dumb` and pipes get plain text (see `ui.go`).
+  `TERM=dumb` and pipes get plain text (see `internal/ui`).
 - Servers bind 127.0.0.1 and require the generated key
   (`~/.fornax/server.key`). Child processes get a scrubbed environment.
-- A runtime that cannot run on this OS/arch fails at `resolve()` with the
-  reason, not partway through a download.
+- A runtime that cannot run on this OS/arch fails at `modelrt.Resolve` with
+  the reason, not partway through a download.
 
 ## Adding a built-in model
 
@@ -42,12 +41,13 @@ tell. When one is warranted, add a `modelSpec` to `models` in `catalog.go`;
 — customs get 7401+.
 
 Engine builds are pinned per platform *and* backend — `engines` in
-`catalog.go` for llama.cpp, `sdEngines` in `imagine.go` — plain build
-first, GPU builds after, with a CUDA build's runtime archive as a `Part`.
+`catalog.go` for llama.cpp, `sdEngines` in `internal/modelrt/sd.go` — plain
+build first, GPU builds after, with a CUDA build's runtime archive as a
+`Part`.
 Take sizes and digests from GitHub's asset metadata
 (`gh api repos/<owner>/<repo>/releases/tags/<tag> --jq '.assets[]|[.name,.size,.digest]'`);
-there is no need to download a 600 MB runtime to hash it. `backend.go`
-picks among them.
+there is no need to download a 600 MB runtime to hash it.
+`internal/modelrt/backend.go` picks among them.
 
 `fornax pins` audits every pin against upstream — built-in HF `main` HEADs,
 the kev-family release tag, the kev/laya source commits, and every saved
@@ -57,44 +57,72 @@ it before a release; it exits non-zero on drift.
 A new command goes in `commands()` in `main.go` and in the `usage` text next
 to it; `TestUsageAndDispatchTableAgree` holds the two together, and the shell
 completions read the same table. Give its flag set
-`set.Usage = usageFunc(set, "usage: …")` so `-h` lists the flags.
+`set.Usage = ui.UsageFunc(set, "usage: …")` so `-h` lists the flags.
 
 ## Map
 
+The root `package main` is the commands — flags, and what each one prints.
+Everything that knows how a model is fetched, verified, spawned or served
+lives in `internal/modelrt`; the commands, the studio and the MCP server
+reach it only through its exported API.
+
+### Commands (root)
+
 | File | Owns |
 | --- | --- |
-| `models.go` | built-ins plus saved custom models as one list; `modelInstalled` |
-| `main.go` | the `commands()` dispatch table, the usage text, `main`, did-you-mean |
+| `main.go` | the `commands()` dispatch table, the usage text, `main`, did-you-mean, the `mcp` entry |
 | `list.go` | `list` — built-ins and saved models and `--json` |
-| `pull.go` | `pull`, `resolve`, and the shared model-argument parsing |
+| `pull.go` | `pull` for saved ids, `hf:` and `ollama:` refs; `parseFlexible` and `modelArgs`, the argument parsing commands share |
 | `rm.go` | `rm`, one id or `-all` |
 | `doctor.go` | `doctor` |
-| `serve.go` | `run`/`connect`, install→verify, `llama-server` spawn, readiness |
-| `use.go` | `withServer` reuse-or-ephemeral, `ask`/`chat`/`see`/`hear`/`test`/`bench`, `ps`, `clean` |
-| `kev.go` | kev runtime: uv venv, `kev.serve` spawn; `installSourceTree` shared with laya |
-| `laya.go` + `laya_serve.py` | laya runtime: uv venv, embedded stdlib `/v1/systemone` shim |
-| `judge.go` | `judge` + the `/v1/systemone` client and answer printer both runtimes share |
-| `apple.go` + `bridge.swift` | Apple Foundation Models: Swift stdio bridge + loopback adapter |
-| `imagine.go` | stable-diffusion.cpp engine + `imagine`/`animate` |
-| `backend.go` | which engine build (cpu/metal/vulkan/cuda) this machine runs |
-| `studio.go`, `studio_*.go` + `studio/` | `studio` — browser UI: the queue and library (core), sd image/video, speech, chat over a warm server; the page is embedded from `studio/` |
-| `studio_remote.go` | `studio -on host` — runs the studio on another machine over an ssh tunnel; the `-leash` that ends it with the connection |
-| `say.go` | `say` — text → WAV via `llama-tts` in the llama engine |
+| `run.go` | `run`/`connect` flags |
+| `use.go` | `ask`/`chat`/`see`/`hear`/`test`/`bench`, `ps`, `clean` |
+| `judge.go` | `judge` + the `/v1/systemone` client and answer printer both decision runtimes share |
+| `imagine.go` | `imagine`/`animate` flags |
+| `studio.go` | `studio` flags |
+| `say.go` | `say`, and `chat -speak` playback |
 | `talk.go`, `record.go` | `talk` (transcribe→answer→speak), `record` (mic → WAV) |
-| `rerank.go` | `rerank` — `/v1/rerank` client + the reranker spec |
-| `show.go` | `show` — GGUF/safetensors header reader |
+| `embed.go`, `rerank.go` | `embed`; `rerank` and its `/v1/rerank` client |
+| `compare.go`, `schema.go` | `compare`; `ask --json/--schema` |
+| `show.go` | `show` — the pin card, GGUF metadata, the safetensors header |
 | `search.go` | `search` — Hugging Face GGUF repo search |
 | `pins.go` | `pins` — the upstream audit: HF HEADs, release digests, source archives |
-| `version.go` | `version`/`upgrade` — release ldflags stamp |
-| `mcp.go` | `mcp` — newline JSON-RPC MCP server on stdio |
+| `version.go` | `version`/`upgrade` — release ldflags stamp (`-X main.version`) |
 | `completion.go` | `completion` — zsh/bash/fish scripts |
-| `embed.go` | `/v1/embeddings` client + `embed` |
-| `hf.go` | `hf:` ref parsing, repo file pick, dynamic pinning, `custom.json` |
-| `ollama.go` | `pull ollama:…` via the Ollama registry |
-| `compare.go`, `schema.go` | `compare`; `ask --json/--schema` |
-| `idle.go` | `run -idle` over llama-server's `/metrics` counters |
 
-### Packages
+### `internal/modelrt` — the model runtime
+
+| File | Owns |
+| --- | --- |
+| `models.go` | built-ins plus saved custom models as one list; `Installed`, `RequireChat` |
+| `pull.go` | `Resolve` (arg → spec + engine, failing clean on an unsupported platform) and `Pull` |
+| `serve.go` | install → verify, `Rehash`, `scrubbedEnv`, `llama-server` spawn, readiness; `Serve` (`run`) and `Connect` |
+| `withserver.go` | `WithServer` — reuse-or-ephemeral across every runtime; `Bench` |
+| `hf.go` | `hf:` ref parsing, repo file pick, dynamic pinning, `custom.json` |
+| `ollama.go` | `ollama:` refs via the Ollama registry |
+| `kev.go` | kev runtime: uv venv, `kev.serve` spawn; `installSourceTree` shared with laya |
+| `laya.go` + `laya_serve.py` | laya runtime: uv venv, embedded stdlib `/v1/systemone` shim |
+| `apple.go` + `bridge.swift` | Apple Foundation Models: Swift stdio bridge + loopback adapter |
+| `sd.go` | the pinned stable-diffusion.cpp builds, `PrepareSD`, the `sd-cli` invocation |
+| `tts.go` | `llama-tts`: `PrepareSpeech`, `RunSay`, `TTSCommand` |
+| `backend.go` | which engine build (cpu/metal/vulkan/cuda) this machine runs |
+| `earshot.go` | handing a running server to Earshot, or the block to paste |
+| `idle.go` | `run -idle` over llama-server's `/metrics` counters |
+| `clean.go` | `Clean` — interrupted downloads and stale staging |
+| `memory_*.go` | total RAM, per OS |
+
+### `internal/studio` and `internal/mcp`
+
+| File | Owns |
+| --- | --- |
+| `studio/studio.go` + `studio/web/` | the studio server: loopback guard, queue, library; the page is embedded from `web/` |
+| `studio/studio_sd.go`, `studio/studio_voice.go` | the image/video and speech kinds the queue makes |
+| `studio/studio_chat.go` | chat over a warm model server |
+| `studio/hub.go` | the Models page: picks (a ref + companion recipe + download size each, pinned at first fetch like any `pull hf:`), Hugging Face search and size preview, downloads run as `fornax pull … --events` |
+| `studio/studio_remote.go` | `studio -on host` — the studio on another machine over an ssh tunnel; the `-leash` that ends it with the connection |
+| `mcp/mcp.go` | `mcp` — newline JSON-RPC MCP server on stdio |
+
+### Packages below the runtime
 
 | Package | Owns |
 | --- | --- |
@@ -102,14 +130,14 @@ completions read the same table. Give its flag set
 | `internal/paths` | the `~/.fornax` layout, receipts, config, the loopback API key |
 | `internal/download` | resumable pinned fetch over HTTP Range, plus the SHA-256 check |
 | `internal/engine` | installing the pinned llama.cpp release; the tar/zip unpackers kev and sd reuse |
-| `internal/openai` | the chat-completions client, media parts, and the raw POST embed/rerank/kev build on |
+| `internal/openai` | the chat-completions client, embeddings, media parts, the keyed GET and raw POST the other clients build on |
+| `internal/gguf` | the GGUF metadata header reader behind `show` |
 | `internal/ui` | ANSI styling, spinner, progress, `HumanSize`, the `-h` flag table |
 | `internal/events` | the `--events` JSON stream and its supervisor leash |
 
-`package main` holds the commands and the runtimes they drive. A model that
-needs a runtime to decide whether it is installed (kev checkpoints, Apple's
-bridge) is judged in `models.go`, not in `internal/paths` — that keeps the
-lower packages free of the runtimes.
+These must not learn about runtimes. A model that needs a runtime to decide
+whether it is installed (kev checkpoints, Apple's bridge) is judged in
+`modelrt.Installed`, not in `internal/paths`.
 
 ## Bugs and security
 

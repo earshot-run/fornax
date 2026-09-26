@@ -8,6 +8,7 @@ import (
 	"runtime"
 
 	"github.com/earshot-run/fornax/internal/catalog"
+	"github.com/earshot-run/fornax/internal/modelrt"
 	"github.com/earshot-run/fornax/internal/paths"
 	"github.com/earshot-run/fornax/internal/ui"
 )
@@ -22,12 +23,12 @@ func cmdDoctor(args []string) error {
 	}
 	row(" ", "fornax", version)
 	row(" ", "home", root)
-	row(" ", "machine", fmt.Sprintf("%s %s · %s RAM", runtime.GOOS, runtime.GOARCH, ui.HumanSize(memoryBytes())))
-	probe := probeGPU()
-	row(" ", "gpu", describeGPU(probe))
-	if eng, err := llamaEngine(); err == nil {
+	row(" ", "machine", fmt.Sprintf("%s %s · %s RAM", runtime.GOOS, runtime.GOARCH, ui.HumanSize(modelrt.MemoryBytes())))
+	probe := modelrt.ProbeGPU()
+	row(" ", "gpu", modelrt.DescribeGPU(probe))
+	if eng, err := modelrt.LlamaEngine(); err == nil {
 		label := "llama.cpp " + catalog.EngineVersion + " · " + string(eng.Backend)
-		if why := skippedGPU(catalog.EngineVariants(), eng, probe); why != "" {
+		if why := modelrt.SkippedGPU(catalog.EngineVariants(), eng, probe); why != "" {
 			label += ui.Dim(" — not CUDA: " + why)
 		}
 		if paths.EngineInstalled(root, eng) {
@@ -52,13 +53,13 @@ func cmdDoctor(args []string) error {
 			}
 		}
 	}
-	pyRuntime("kev", kevRuntimeReady(root))
-	pyRuntime("laya", layaRuntimeReady(root))
-	if appleSpec := model("apple-fm"); appleSpec != nil {
-		switch err := appleSupported(); {
+	pyRuntime("kev", modelrt.KevRuntimeReady(root))
+	pyRuntime("laya", modelrt.LayaRuntimeReady(root))
+	if appleSpec := modelrt.Model("apple-fm"); appleSpec != nil {
+		switch err := modelrt.AppleSupported(); {
 		case err != nil:
 			row(ui.MarkIdle(), "apple-fm", ui.Dim("unsupported here — needs Apple Silicon on macOS 26+"))
-		case appleInstalled(root, appleSpec):
+		case modelrt.AppleInstalled(root, appleSpec):
 			row(ui.MarkOK(), "apple-fm", "bridge compiled — ready to serve")
 		default:
 			row(ui.MarkIdle(), "apple-fm", ui.Dim("supported — `fornax pull apple-fm` compiles the bridge"))
@@ -70,16 +71,16 @@ func cmdDoctor(args []string) error {
 	} else {
 		row(ui.MarkIdle(), "key", ui.Dim("generated on first run"))
 	}
-	for _, spec := range allSpecs(root) {
-		if modelInstalled(root, spec) {
+	for _, spec := range modelrt.AllSpecs(root) {
+		if modelrt.Installed(root, spec) {
 			live := ""
-			if cfgErr == nil && isServing(spec, cfg.APIKey) {
+			if cfgErr == nil && modelrt.IsServing(spec, cfg.APIKey) {
 				live = ui.Green(fmt.Sprintf(" — serving :%d", spec.Port))
 			}
 			row(ui.MarkOK(), "model", fmt.Sprintf("%s %s%s", spec.ID, ui.Dim("("+spec.Kind.String()+")"), live))
 		}
 	}
-	if earshotPresent() {
+	if modelrt.EarshotPresent() {
 		row(ui.MarkOK(), "earshot", "daemon config found")
 	} else {
 		row(ui.MarkIdle(), "earshot", ui.Dim("not found on this computer"))

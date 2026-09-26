@@ -10,6 +10,8 @@ import (
 	"io"
 	"os"
 	"testing"
+
+	"github.com/earshot-run/fornax/internal/modelrt"
 )
 
 func TestEmbedLive(t *testing.T) {
@@ -17,7 +19,7 @@ func TestEmbedLive(t *testing.T) {
 		t.Skip("set FORNAX_LIVE=1 to pull nomic-embed and spawn a real server")
 	}
 	ctx := context.Background()
-	spec, _, err := resolve(ctx, "hf:nomic-ai/nomic-embed-text-v1.5-GGUF")
+	spec, _, err := modelrt.Resolve(ctx, "hf:nomic-ai/nomic-embed-text-v1.5-GGUF")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +56,7 @@ func TestEmbedTestBenchLive(t *testing.T) {
 		t.Skip("set FORNAX_LIVE=1 to pull nomic-embed and spawn a real server")
 	}
 	ctx := context.Background()
-	spec, eng, err := resolve(ctx, "hf:nomic-ai/nomic-embed-text-v1.5-GGUF")
+	spec, eng, err := modelrt.Resolve(ctx, "hf:nomic-ai/nomic-embed-text-v1.5-GGUF")
 	if err != nil {
 		t.Fatal(err)
 	}

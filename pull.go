@@ -7,13 +7,11 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"runtime"
 	"strings"
 
 	"github.com/earshot-run/fornax/internal/catalog"
-	"github.com/earshot-run/fornax/internal/engine"
 	"github.com/earshot-run/fornax/internal/events"
-	"github.com/earshot-run/fornax/internal/paths"
+	"github.com/earshot-run/fornax/internal/modelrt"
 	"github.com/earshot-run/fornax/internal/ui"
 )
 
@@ -27,10 +25,10 @@ func cmdPull(ctx context.Context, args []string) error {
 		if strings.HasPrefix(arg, "-") {
 			continue
 		}
-		if isOllamaRef(arg) {
+		if modelrt.IsOllamaRef(arg) {
 			return cmdPullOllama(ctx, args)
 		}
-		if isHFRef(arg) {
+		if modelrt.IsHFRef(arg) {
 			return cmdPullHF(ctx, args)
 		}
 	}
@@ -42,9 +40,9 @@ func cmdPull(ctx context.Context, args []string) error {
 		events.Enable()
 	}
 	for _, id := range ids {
-		spec, eng, err := resolve(ctx, id)
+		spec, eng, err := modelrt.Resolve(ctx, id)
 		if err == nil {
-			err = pull(ctx, spec, eng)
+			err = modelrt.Pull(ctx, spec, eng)
 		}
 		if err != nil {
 			events.Emit("error", map[string]any{"model": id, "message": err.Error()})
@@ -52,125 +50,6 @@ func cmdPull(ctx context.Context, args []string) error {
 		}
 		events.Emit("installed", map[string]any{"model": spec.ID})
 	}
-	return nil
-}
-
-// An arg is a model reference when it carries an explicit scheme or is a
-// bare Org/Repo — saved ids never contain a slash.
-func isHFRef(arg string) bool {
-	return strings.HasPrefix(arg, "hf:") || strings.HasPrefix(arg, "hf.co/") ||
-		strings.Contains(arg, "huggingface.co/") || strings.Contains(arg, "/")
-}
-
-func isOllamaRef(arg string) bool {
-	return strings.HasPrefix(arg, "ollama:") || strings.Contains(arg, "ollama.com/")
-}
-
-// resolve maps an arg to a model: a saved id, a built-in, or a fresh
-// hf:/ollama: ref pinned and saved on the spot.
-func resolve(ctx context.Context, arg string) (*catalog.Spec, *catalog.EngineSpec, error) {
-	spec := model(arg)
-	if spec == nil {
-		var entry *customEntry
-		var err error
-		switch {
-		case isOllamaRef(arg):
-			entry, err = ensureOllama(ctx, arg, "", "")
-		case isHFRef(arg):
-			entry, err = ensureHF(ctx, arg, "", "", "", "", nil, nil)
-		default:
-			return nil, nil, unknownModel(arg)
-		}
-		if err != nil {
-			return nil, nil, err
-		}
-		spec = entry.spec()
-	}
-	if spec.Runtime == catalog.Kev || spec.Runtime == catalog.Laya {
-		if runtime.GOOS == "windows" {
-			return nil, nil, fmt.Errorf("%s models need macOS or Linux (torch MPS/CUDA)", spec.Runtime)
-		}
-		return spec, nil, nil
-	}
-	if spec.Runtime == catalog.Apple {
-		if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
-			return nil, nil, fmt.Errorf("apple-fm is Apple's on-device model — it needs Apple Silicon on macOS 26+")
-		}
-		return spec, nil, nil
-	}
-	if spec.Runtime == catalog.SD {
-		eng, err := sdEngine()
-		if err != nil {
-			return nil, nil, err
-		}
-		return spec, eng, nil
-	}
-	eng, err := llamaEngine()
-	if err != nil {
-		return nil, nil, err
-	}
-	return spec, eng, nil
-}
-
-// This machine's llama.cpp build; an error means none fits.
-func llamaEngine() (*catalog.EngineSpec, error) {
-	eng, err := pickEngine(catalog.EngineVariants(), probeGPU(), os.Getenv("FORNAX_BACKEND"))
-	if err != nil {
-		return nil, err
-	}
-	if eng == nil {
-		return nil, fmt.Errorf("fornax does not have a pinned llama.cpp for %s/%s yet", runtime.GOOS, runtime.GOARCH)
-	}
-	return eng, nil
-}
-
-func pull(ctx context.Context, spec *catalog.Spec, eng *catalog.EngineSpec) error {
-	root := paths.Home()
-	if err := paths.ProtectDir(root); err != nil {
-		return err
-	}
-	if spec.Runtime == catalog.Llama && !paths.EngineInstalled(root, eng) {
-		bar := ui.NewProgress("engine", eng.TotalBytes())
-		if err := engine.Ensure(ctx, root, eng, bar.Set); err != nil {
-			return err
-		}
-		fmt.Fprintf(os.Stderr, "%s engine llama.cpp %s (%s) installed\n", ui.Green("✓"), catalog.EngineVersion, eng.Backend)
-	}
-	if spec.Runtime == catalog.Kev {
-		bar := ui.NewProgress("kev runtime", kevSource.Bytes)
-		if err := ensureKevRuntime(ctx, root, bar.Set); err != nil {
-			return err
-		}
-	}
-	if spec.Runtime == catalog.Laya {
-		bar := ui.NewProgress("laya runtime", layaSource.Bytes)
-		if err := ensureLayaRuntime(ctx, root, bar.Set); err != nil {
-			return err
-		}
-	}
-	if spec.Runtime == catalog.SD && !paths.EngineInstalled(root, eng) {
-		bar := ui.NewProgress("sd engine", eng.TotalBytes())
-		if err := engine.Ensure(ctx, root, eng, bar.Set); err != nil {
-			return err
-		}
-		fmt.Fprintf(os.Stderr, "%s engine stable-diffusion.cpp %s (%s) installed\n", ui.Green("✓"), sdVersion, eng.Backend)
-	}
-	if modelInstalled(root, spec) {
-		fmt.Fprintf(os.Stderr, "%s\n", ui.Dim(spec.ID+" already installed"))
-		return nil
-	}
-	if spec.Runtime == catalog.Apple {
-		if err := ensureModel(ctx, root, spec, nil); err != nil {
-			return err
-		}
-		fmt.Fprintf(os.Stderr, "%s %s ready — the model itself ships in macOS\n", ui.Green("✓"), ui.Bold(spec.ID))
-		return nil
-	}
-	bar := ui.NewProgress(spec.ID, spec.TotalBytes())
-	if err := ensureModel(ctx, root, spec, bar.Set); err != nil {
-		return err
-	}
-	fmt.Fprintf(os.Stderr, "%s %s installed (%s)\n", ui.Green("✓"), ui.Bold(spec.ID), ui.Dim(ui.HumanSize(spec.TotalBytes())))
 	return nil
 }
 
@@ -196,9 +75,115 @@ func modelArgs(ctx context.Context, cmd string, args []string, extra string) (*c
 	if set.NArg() < 1 {
 		return nil, nil, nil, fmt.Errorf("usage: fornax %s <model>%s", cmd, extra)
 	}
-	spec, eng, err := resolve(ctx, set.Arg(0))
+	spec, eng, err := modelrt.Resolve(ctx, set.Arg(0))
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	return spec, eng, set.Args()[1:], nil
+}
+
+// `fornax pull hf:Org/Repo[/File.gguf] [--as name] [--kind …]`, or paste a
+// huggingface.co URL. No file picks a sensible quant; split archives pull
+// every part; a repo mmproj attaches itself when the kind wants one.
+func cmdPullHF(ctx context.Context, args []string) error {
+	set := flag.NewFlagSet("pull", flag.ExitOnError)
+	as := set.String("as", "", "custom id to save the model under")
+	kind := set.String("kind", "", "text | vision | audio | image | video | embed | rerank | speech (default: infer)")
+	var with companionFlags
+	set.Var(&with, "with", "image/video: a file sd-cli loads beside the weights, as <sd-cli flag>=hf:Org/Repo/File (repeatable)")
+	sdArgs := set.String("args", "", "image/video: sd-cli arguments saved with the model")
+	mmproj := set.String("mmproj", "", "projector file in the same repo (default: auto-detect for vision/audio/speech)")
+	rev := set.String("rev", "", "branch, tag or commit (default: main)")
+	asEvents := set.Bool("events", false, "one JSON event per line on stdout")
+	set.Usage = ui.UsageFunc(set, `usage: fornax pull hf:Org/Repo[/File.gguf] [--as name] [--kind K] [--mmproj F] [--events]
+       (or paste a huggingface.co repo/blob/resolve URL)`)
+	ref := parseFlexible(set, args, 1)
+	if len(ref) != 1 {
+		return fmt.Errorf("usage: fornax pull hf:Org/Repo[/File.gguf] [--as name] [--kind K]")
+	}
+	if *asEvents {
+		events.Enable()
+	}
+	spec, err := func() (*catalog.Spec, error) {
+		spec, err := modelrt.EnsureHF(ctx, ref[0], modelrt.HFOptions{
+			As: *as, Kind: *kind, MMProj: *mmproj, Rev: *rev, With: with, Args: strings.Fields(*sdArgs),
+		})
+		if err != nil {
+			return nil, err
+		}
+		if spec.Kind == catalog.Image || spec.Kind == catalog.Video {
+			_, _, err = modelrt.PrepareSD(ctx, spec)
+			return spec, err
+		}
+		eng, err := modelrt.LlamaEngine()
+		if err != nil {
+			return nil, err
+		}
+		return spec, modelrt.Pull(ctx, spec, eng)
+	}()
+	if err != nil {
+		events.Emit("error", map[string]any{"model": ref[0], "message": err.Error()})
+		return err
+	}
+	events.Emit("installed", map[string]any{"model": spec.ID, "kind": spec.Kind.String()})
+	switch spec.Kind {
+	case catalog.Image:
+		fmt.Fprintf(os.Stderr, "%s saved as %s — `fornax imagine %s \"…\"`\n", ui.Green("✓"), ui.Bold(spec.ID), spec.ID)
+	case catalog.Video:
+		fmt.Fprintf(os.Stderr, "%s saved as %s — `fornax animate %s \"…\"`\n", ui.Green("✓"), ui.Bold(spec.ID), spec.ID)
+	default:
+		fmt.Fprintf(os.Stderr, "%s saved as %s — `fornax ask %s …` / `fornax run %s`\n",
+			ui.Green("✓"), ui.Bold(spec.ID), spec.ID, spec.ID)
+	}
+	return nil
+}
+
+type companionFlags []modelrt.Companion
+
+func (c *companionFlags) String() string { return "" }
+
+func (c *companionFlags) Set(value string) error {
+	name, ref, ok := strings.Cut(value, "=")
+	name = strings.TrimLeft(name, "-")
+	if !ok || name == "" || ref == "" {
+		return fmt.Errorf("--with wants <sd-cli flag>=hf:Org/Repo/File, got %q", value)
+	}
+	*c = append(*c, modelrt.Companion{Flag: name, Ref: ref})
+	return nil
+}
+
+// `fornax pull ollama:<name>[:<tag>] [--as name] [--kind text|vision|audio]`
+func cmdPullOllama(ctx context.Context, args []string) error {
+	set := flag.NewFlagSet("pull", flag.ExitOnError)
+	as := set.String("as", "", "custom id to save the model under")
+	kind := set.String("kind", "", "text | vision | audio (default: text, or vision when the model ships a projector)")
+	asEvents := set.Bool("events", false, "one JSON event per line on stdout")
+	set.Usage = ui.UsageFunc(set, `usage: fornax pull ollama:<name>[:<tag>] [--as name] [--events]
+       (or paste an ollama.com/library/<name> URL)`)
+	ref := parseFlexible(set, args, 1)
+	if len(ref) != 1 {
+		return fmt.Errorf("usage: fornax pull ollama:<name>[:<tag>] [--as name] [--kind vision]")
+	}
+	if *asEvents {
+		events.Enable()
+	}
+	spec, err := func() (*catalog.Spec, error) {
+		spec, err := modelrt.EnsureOllama(ctx, ref[0], *as, *kind)
+		if err != nil {
+			return nil, err
+		}
+		eng, err := modelrt.LlamaEngine()
+		if err != nil {
+			return nil, err
+		}
+		return spec, modelrt.Pull(ctx, spec, eng)
+	}()
+	if err != nil {
+		events.Emit("error", map[string]any{"model": ref[0], "message": err.Error()})
+		return err
+	}
+	events.Emit("installed", map[string]any{"model": spec.ID, "kind": spec.Kind.String()})
+	fmt.Fprintf(os.Stderr, "%s saved as %s — `fornax ask %s …` / `fornax run %s`\n",
+		ui.Green("✓"), ui.Bold(spec.ID), spec.ID, spec.ID)
+	return nil
 }

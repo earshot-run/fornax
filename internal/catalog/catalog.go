@@ -59,12 +59,12 @@ func (m Modality) String() string {
 }
 
 // What serves the model. Llama is the pinned llama.cpp binary;
-// Kev is the python kev.serve app (see kev.go); Apple is the
+// Kev is the python kev.serve app (see modelrt/kev.go); Apple is the
 // on-device Foundation Models framework behind a compiled Swift bridge
-// (see apple.go). SD is a pinned stable-diffusion.cpp binary — a
-// foreground image and video generator, not a server (see imagine.go).
+// (see modelrt/apple.go). SD is a pinned stable-diffusion.cpp binary — a
+// foreground image and video generator, not a server (see modelrt/sd.go).
 // Laya is the python laya package behind fornax's embedded serve shim
-// (see laya.go).
+// (see modelrt/laya.go).
 type Runtime int
 
 const (
@@ -240,21 +240,21 @@ func (e *EngineSpec) Receipt() string {
 
 var models = []Spec{
 	{
-		ID:      "kev-0.6b",
+		ID:      "kev-0.8b",
 		Maker:   "Kev",
-		Params:  "0.6B",
-		Name:    "Kev 0.6B",
-		Summary: "Typed questions, calibrated probabilities; fastest kev.",
+		Params:  "0.8B",
+		Name:    "Kev 0.8B",
+		Summary: "Typed questions, calibrated probabilities; the smallest kev.",
 		Kind:    Decision,
 		Runtime: Kev,
 		Model: Pin{
-			File:     "kev-0.6b-qwen3.tar.gz",
+			File:     "kev-0.8b.tar.gz",
 			Revision: "kev-family",
-			Bytes:    43_262_595,
-			SHA256:   "baf114336f20d5c21584d34cf516055b9d0cd7bc91634366a7fecb3f6cfd78fb",
-			URL:      "https://github.com/jaredpalmer/kev/releases/download/kev-family/kev-0.6b-qwen3.tar.gz",
+			Bytes:    45_807_488,
+			SHA256:   "45a6b6851b5050d4d8f769018ba416cc28a2d08cf80e88b1cc11cc2b905c1490",
+			URL:      "https://github.com/jaredpalmer/kev/releases/download/kev-family/kev-0.8b.tar.gz",
 		},
-		FitBytes: 3 * gib,
+		FitBytes: 4 * gib,
 		Port:     7341,
 	},
 	{
@@ -262,38 +262,57 @@ var models = []Spec{
 		Maker:   "Kev",
 		Params:  "4B",
 		Name:    "Kev 4B",
-		Summary: "Best accuracy per byte of the kev family; the one to start with.",
+		Summary: "The kev to start with: best accuracy for its size.",
 		Kind:    Decision,
 		Runtime: Kev,
 		Model: Pin{
-			File:     "kev-4b-qwen3.tar.gz",
+			File:     "kev-4b.tar.gz",
 			Revision: "kev-family",
-			Bytes:    131_245_471,
-			SHA256:   "01d3dc8eeccb4518e7053d94ce890d8ba7edbfa7d1c1687681c520dd1cde7769",
-			URL:      "https://github.com/jaredpalmer/kev/releases/download/kev-family/kev-4b-qwen3.tar.gz",
+			Bytes:    128_973_435,
+			SHA256:   "df6a9e3d33e6ef065a5c10477459f0577f16ffc97ca3b97f3746a2356d5b3f5a",
+			URL:      "https://github.com/jaredpalmer/kev/releases/download/kev-family/kev-4b.tar.gz",
 		},
 		DType:    "bf16",
-		FitBytes: 10 * gib,
+		FitBytes: 12 * gib,
 		Port:     7342,
 	},
 	{
-		ID:      "kev-8b",
+		ID:      "kev-9b",
 		Maker:   "Kev",
-		Params:  "8B",
-		Name:    "Kev 8B",
-		Summary: "Sharpest kev answers; wants a bigger machine.",
+		Params:  "9B",
+		Name:    "Kev 9B",
+		Summary: "Sharper answers than 4B; wants a 24 GB GPU.",
 		Kind:    Decision,
 		Runtime: Kev,
 		Model: Pin{
-			File:     "kev-8b-qwen3.tar.gz",
+			File:     "kev-9b.tar.gz",
 			Revision: "kev-family",
-			Bytes:    173_634_257,
-			SHA256:   "4dd002a09f61de311a6ecea8f8e9b343b5a647a2f4bb4f0f0d24bc8a79c0d4a6",
-			URL:      "https://github.com/jaredpalmer/kev/releases/download/kev-family/kev-8b-qwen3.tar.gz",
+			Bytes:    172_224_408,
+			SHA256:   "45ec84910daa015f359c2c105069576398b1ec8691857a8a94fa513e0d3efb5d",
+			URL:      "https://github.com/jaredpalmer/kev/releases/download/kev-family/kev-9b.tar.gz",
 		},
 		DType:    "bf16",
-		FitBytes: 18 * gib,
+		FitBytes: 24 * gib,
 		Port:     7343,
+	},
+	{
+		ID:      "kev-27b",
+		Maker:   "Kev",
+		Params:  "27B",
+		Name:    "Kev 27B",
+		Summary: "The most accurate, best-calibrated kev; data-centre GPU.",
+		Kind:    Decision,
+		Runtime: Kev,
+		Model: Pin{
+			File:     "kev-27b.tar.gz",
+			Revision: "kev-family",
+			Bytes:    446_278_982,
+			SHA256:   "6c6c10cf59b4e9e6a1b9f8ab48a402242e2f4c397d66551d9a57d7584ec69fa1",
+			URL:      "https://github.com/jaredpalmer/kev/releases/download/kev-family/kev-27b.tar.gz",
+		},
+		DType:    "bf16",
+		FitBytes: 60 * gib,
+		Port:     7344,
 	},
 	{
 		ID:      "laya",

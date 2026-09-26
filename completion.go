@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/earshot-run/fornax/internal/modelrt"
 	"github.com/earshot-run/fornax/internal/paths"
 )
 
@@ -120,7 +121,7 @@ func cmdCompletion(args []string) error {
 // line. Wired in main.go as `__complete_models`; a failure just yields no
 // completions.
 func cmdCompleteModels() error {
-	for _, spec := range allSpecs(paths.Home()) {
+	for _, spec := range modelrt.AllSpecs(paths.Home()) {
 		fmt.Println(spec.ID)
 	}
 	return nil

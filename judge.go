@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/earshot-run/fornax/internal/catalog"
+	"github.com/earshot-run/fornax/internal/modelrt"
 	"github.com/earshot-run/fornax/internal/openai"
 	"github.com/earshot-run/fornax/internal/ui"
 )
@@ -41,15 +42,6 @@ func (q *typedQuestion) json() map[string]any {
 		body["criteria"] = q.Options
 	}
 	return body
-}
-
-// The model name a decision server expects in the request: kev answers
-// under its family alias, laya under the id it was spawned as.
-func decisionModel(spec *catalog.Spec) string {
-	if spec.Runtime == catalog.Kev {
-		return kevAlias
-	}
-	return spec.ID
 }
 
 func systemOne(ctx context.Context, url, key, model, state string, questions map[string]*typedQuestion) (map[string]any, error) {
@@ -179,9 +171,9 @@ func judgeProbeQuestions() (map[string]*typedQuestion, []string) {
 const judgeProbeState = "Shoes arrived two weeks late and in the wrong size. Also I see two charges on my card."
 
 func runDecisionTest(ctx context.Context, spec *catalog.Spec) error {
-	return withServer(ctx, spec, nil, func(url, key string) error {
+	return modelrt.WithServer(ctx, spec, nil, func(url, key string) error {
 		qs, order := judgeProbeQuestions()
-		reply, err := systemOne(ctx, url, key, decisionModel(spec), judgeProbeState, qs)
+		reply, err := systemOne(ctx, url, key, modelrt.DecisionModel(spec), judgeProbeState, qs)
 		if err != nil {
 			return err
 		}
@@ -194,11 +186,11 @@ func runDecisionTest(ctx context.Context, spec *catalog.Spec) error {
 // Median latency over a handful of identical requests — the prefix cache makes
 // later ones representative of steady state.
 func runDecisionBench(ctx context.Context, spec *catalog.Spec, runs int) error {
-	return withServer(ctx, spec, nil, func(url, key string) error {
+	return modelrt.WithServer(ctx, spec, nil, func(url, key string) error {
 		qs, _ := judgeProbeQuestions()
 		var lat []float64
 		for i := 0; i < runs; i++ {
-			reply, err := systemOne(ctx, url, key, decisionModel(spec), judgeProbeState, qs)
+			reply, err := systemOne(ctx, url, key, modelrt.DecisionModel(spec), judgeProbeState, qs)
 			if err != nil {
 				return err
 			}
@@ -261,7 +253,7 @@ func runJudge(ctx context.Context, spec *catalog.Spec, state string, asks []stri
 			return fmt.Errorf("no questions — pass --ask 'id|noul|instructions' (or --json)")
 		}
 	}
-	return withServer(ctx, spec, nil, func(url, key string) error {
+	return modelrt.WithServer(ctx, spec, nil, func(url, key string) error {
 		if jsonPath != "" {
 			resp, err := openai.Post(ctx, url+"/systemone", key, raw)
 			if err != nil {
@@ -278,7 +270,7 @@ func runJudge(ctx context.Context, spec *catalog.Spec, state string, asks []stri
 			printJudgeAnswers(parsed, nil)
 			return nil
 		}
-		reply, err := systemOne(ctx, url, key, decisionModel(spec), state, questions)
+		reply, err := systemOne(ctx, url, key, modelrt.DecisionModel(spec), state, questions)
 		if err != nil {
 			return err
 		}
@@ -315,7 +307,7 @@ examples:
 		return fmt.Errorf("usage: fornax judge <model> [--state …] [--ask …|--json …]")
 	}
 	id := got[0]
-	spec, _, err := resolve(ctx, id)
+	spec, _, err := modelrt.Resolve(ctx, id)
 	if err != nil {
 		return err
 	}
