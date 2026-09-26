@@ -39,11 +39,17 @@ const studioLeashBusy = 75
 // a cold disk, and leaves room for a password or host-key prompt.
 const studioLinkTimeout = 60 * time.Second
 
-var errTunnelPortBusy = errors.New("tunnel port busy")
+const installScriptURL = "https://raw.githubusercontent.com/earshot-run/fornax/main/install.sh"
+
+var (
+	errTunnelPortBusy = errors.New("tunnel port busy")
+	errFornaxMissing  = errors.New("fornax isn't installed")
+)
 
 // Run the studio on host over ssh and drive it from here, trying tunnel
-// ports upward from port until one is free on both ends.
-func On(ctx context.Context, host, fornaxPath string, port int, noOpen bool) error {
+// ports upward from port until one is free on both ends. A remote without
+// fornax gets offered an install of release tag (latest when empty).
+func On(ctx context.Context, host, fornaxPath string, port int, noOpen bool, tag string) error {
 	if host == "" || strings.HasPrefix(host, "-") || strings.ContainsAny(host, " \t\r\n") {
 		return fmt.Errorf("-on takes [user@]host or an ssh-config alias, not %q", host)
 	}
@@ -51,12 +57,23 @@ func On(ctx context.Context, host, fornaxPath string, port int, noOpen bool) err
 	if err != nil {
 		return errors.New("-on needs an ssh client on PATH — install OpenSSH")
 	}
+	offered := false
 	for range 5 {
 		port, err = freeTunnelPort(port)
 		if err != nil {
 			return err
 		}
 		err = runTunnel(ctx, sshPath, host, fornaxPath, port, noOpen)
+		if errors.Is(err, errFornaxMissing) && !offered && fornaxPath == "fornax" && ui.IsTTY(os.Stdin) {
+			offered = true
+			if !confirmRemoteInstall(host, tag) {
+				return err
+			}
+			if err := installRemote(ctx, sshPath, host, tag); err != nil {
+				return err
+			}
+			continue
+		}
 		if !errors.Is(err, errTunnelPortBusy) {
 			return err
 		}
@@ -258,13 +275,68 @@ func tunnelFailure(host string, code int, lines []string) error {
 	case code == 255:
 		return with(fmt.Sprintf("couldn't reach %s over ssh", host))
 	case code == 127:
-		return fmt.Errorf("fornax isn't installed on %s (looked on PATH, ~/.local/bin and ~/go/bin) — install it there with\n  curl -fsSL https://raw.githubusercontent.com/earshot-run/fornax/main/install.sh | sh\nor point -fornax at it", host)
+		return fmt.Errorf("%w on %s (looked on PATH, ~/.local/bin and ~/go/bin) — install it there with\n  curl -fsSL %s | sh\nor point -fornax at it", errFornaxMissing, host, installScriptURL)
 	case code == 2 && strings.Contains(text, "-leash"):
 		return fmt.Errorf("fornax on %s is too old for -on — run `fornax upgrade` there", host)
 	case code < 0:
 		return with(fmt.Sprintf("ssh to %s ended before the studio was ready", host))
 	}
 	return with(fmt.Sprintf("the studio on %s exited before it was ready (exit %d)", host, code))
+}
+
+func confirmRemoteInstall(host, tag string) bool {
+	release := "the latest fornax"
+	if tag != "" {
+		release = "fornax " + tag
+	}
+	fmt.Fprintf(os.Stderr, "fornax isn't installed on %s. Install %s there into ~/.local/bin? [Y/n] ", ui.Bold(host), release)
+	answer, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && answer == "" {
+		fmt.Fprintln(os.Stderr)
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(answer)) {
+	case "", "y", "yes":
+		return true
+	}
+	return false
+}
+
+// Runs install.sh on host, which checks the binary against the release's
+// sha256sums.txt. The script goes over stdin to a bare `sh -s`: some sshds
+// re-quote the command line on the way in (Windows OpenSSH with WSL's
+// bash.exe as DefaultShell expands $vars early), and stdin reaches sh as is.
+func installRemote(ctx context.Context, sshPath, host, tag string) error {
+	cmd := exec.CommandContext(ctx, sshPath, "--", host, "sh -s")
+	cmd.Stdin = strings.NewReader(remoteInstallScript(tag))
+	remote := newRemoteLog(host, os.Stderr)
+	cmd.Stdout = remote
+	cmd.Stderr = remote
+	err := cmd.Run()
+	remote.flush()
+	if err != nil {
+		if last := lastLine(remote.last()); last != "" {
+			return fmt.Errorf("couldn't install fornax on %s: %s", host, last)
+		}
+		return fmt.Errorf("couldn't install fornax on %s: %w", host, err)
+	}
+	return nil
+}
+
+// Saved before it runs, so a failed download fails the install instead of
+// piping nothing into sh.
+func remoteInstallScript(tag string) string {
+	env := ""
+	if tag != "" {
+		env = "FORNAX_TAG=" + shQuote(tag) + " "
+	}
+	return fmt.Sprintf(`command -v curl >/dev/null 2>&1 || { echo "installing fornax needs curl" >&2; exit 1; }
+t=$(mktemp) || exit 1
+curl -fsSL %s -o "$t" && %ssh "$t" </dev/null
+s=$?
+rm -f "$t"
+exit $s
+`, shQuote(installScriptURL), env)
 }
 
 func exitCode(err error) int {

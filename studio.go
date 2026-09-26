@@ -29,7 +29,11 @@ func cmdStudio(ctx context.Context, args []string) error {
 				start = *port
 			}
 		})
-		return studio.On(ctx, *on, *fornaxPath, start, *noOpen)
+		tag := ""
+		if version != "dev" {
+			tag = version
+		}
+		return studio.On(ctx, *on, *fornaxPath, start, *noOpen, tag)
 	}
 	return studio.Serve(ctx, *port, *noOpen, *leash)
 }

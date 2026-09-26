@@ -25,7 +25,7 @@ what agents should read.
 | `fornax see <model> <image> [question]` | Ask a vision model about a png/jpg/webp/gif |
 | `fornax hear <model> <audio> [question]` | Ask an audio model about a take; transcribes by default |
 | `fornax imagine <model> "prompt"` | Generate an image with a model you added — `-o`, `-image`, `-steps`, `-seed`, `-size WxH`, `-neg` |
-| `fornax studio` | The browser studio: chat (text, vision and audio models), image, video and voice, plus a Models page that suggests picks for this machine, searches Hugging Face and downloads with live progress. Loopback only, behind your key; images live in `~/.fornax/studio`. `-on [user@]host` runs it on another machine (a home GPU box, a rented cloud GPU) over ssh and opens it here through a tunnel — the remote needs fornax installed and stays loopback-only |
+| `fornax studio` | The browser studio: chat (text, vision and audio models), image, video and voice, plus a Models page that suggests picks for this machine, searches Hugging Face and downloads with live progress. Loopback only, behind your key; images live in `~/.fornax/studio`. `-on [user@]host` runs it on another machine (a home GPU box, a rented cloud GPU) over ssh and opens it here through a tunnel — the remote stays loopback-only, and if it has no fornax yet, run from a terminal it offers to install the same release there (install.sh, sha256-checked) |
 | `fornax animate <model> "prompt"` | Generate a video clip with a model you added — the same flags plus `-frames` |
 | `fornax say <model> "text"` | Speak text to a WAV — `-o out.wav` (or `-` for stdout), `-voice ref.wav` clones a voice, `-lang en\|zh\|…` |
 | `fornax embed <model> [text]` | Turn text into a vector — one-line JSON on stdout |

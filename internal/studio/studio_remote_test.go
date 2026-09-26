@@ -8,7 +8,9 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"slices"
@@ -82,6 +84,37 @@ func TestRemoteStudioCommandSurvivesTwoShells(t *testing.T) {
 	}
 }
 
+func TestRemoteInstallScriptRunsTheSavedScript(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a POSIX sh")
+	}
+	bin := t.TempDir()
+	fakeCurl := `#!/bin/sh
+while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift;; http*) url="$1";; esac; shift; done
+[ "$url" = "$FAIL_URL" ] && exit 22
+echo 'echo "tag=${FORNAX_TAG:-latest}"; exit 3' >"$out"
+`
+	if err := os.WriteFile(filepath.Join(bin, "curl"), []byte(fakeCurl), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run := func(tag, failURL string) (string, int) {
+		cmd := exec.Command("sh", "-s")
+		cmd.Stdin = strings.NewReader(remoteInstallScript(tag))
+		cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin", "FAIL_URL=" + failURL}
+		out, err := cmd.CombinedOutput()
+		return strings.TrimSpace(string(out)), exitCode(err)
+	}
+	if out, code := run("v1.2.3", ""); out != "tag=v1.2.3" || code != 3 {
+		t.Errorf("pinned install printed %q, exit %d — want the script run with the tag and its exit status kept", out, code)
+	}
+	if out, _ := run("", ""); out != "tag=latest" {
+		t.Errorf("unpinned install printed %q", out)
+	}
+	if out, code := run("v1.2.3", installScriptURL); code == 0 || out != "" {
+		t.Errorf("a failed download should fail the install without running anything, got %q exit %d", out, code)
+	}
+}
+
 func TestReadStudioLink(t *testing.T) {
 	const link = "http://127.0.0.1:7360/?key=esk_local_abc"
 	var noise []string
@@ -139,6 +172,9 @@ func TestTunnelFailure(t *testing.T) {
 		}
 		if err == nil || errors.Is(err, errTunnelPortBusy) || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: got %v, want it to mention %q", c.name, err, c.want)
+		}
+		if missing := errors.Is(err, errFornaxMissing); missing != (c.code == 127) {
+			t.Errorf("%s: offering an install is %v, want %v", c.name, missing, c.code == 127)
 		}
 	}
 }
