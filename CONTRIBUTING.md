@@ -101,6 +101,7 @@ reach it only through its exported API.
 | `laya.go` + `laya_serve.py` | laya runtime: uv venv, embedded stdlib `/v1/systemone` shim |
 | `apple.go` + `bridge.swift` | Apple Foundation Models: Swift stdio bridge + loopback adapter |
 | `sd.go` | the stable-diffusion.cpp builds, `PrepareSD`, the `sd-cli` invocation |
+| `sdserver.go` | `StartSD`: a warm `sd-server` and its native async job API |
 | `tts.go` | `llama-tts`: `PrepareSpeech`, `RunSay`, `TTSCommand` |
 | `backend.go` | which engine build (cpu/metal/vulkan/cuda) this machine runs |
 | `earshot.go` | handing a running server to Earshot, or the block to paste |
@@ -113,7 +114,7 @@ reach it only through its exported API.
 | File | Owns |
 | --- | --- |
 | `studio/studio.go` + `studio/web/` | the studio server: loopback guard, queue, library; the page is embedded from `web/` |
-| `studio/studio_sd.go`, `studio/studio_voice.go` | the image/video and speech kinds the queue makes |
+| `studio/studio_sd.go`, `studio/studio_voice.go` | the image/video and speech kinds the queue makes; `sdSlot` keeps one image model warm |
 | `studio/studio_chat.go` | chat over a warm model server |
 | `studio/hub.go` | the Models page: picks (a ref + companion recipe + download size each, saved at first fetch like any `pull hf:`), the most-downloaded Hugging Face GGUF repos, search and size preview, downloads run as `fornax pull … --events` |
 | `studio/studio_remote.go` | `studio -on host` — the studio on another machine over an ssh tunnel; the `-leash` that ends it with the connection |

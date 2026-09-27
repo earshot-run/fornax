@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/earshot-run/fornax/internal/catalog"
+	"github.com/earshot-run/fornax/internal/modelrt"
 )
 
 func testStudio(t *testing.T) *studio {
@@ -273,6 +274,72 @@ func TestModelLabelUsesTheRepoNameForDerivedIDs(t *testing.T) {
 		if got := modelLabel(&c.spec); got != c.want {
 			t.Errorf("modelLabel(%s) = %q, want %q", c.spec.ID, got, c.want)
 		}
+	}
+}
+
+type fakeSD struct {
+	id     string
+	exited chan error
+	closed bool
+}
+
+func (f *fakeSD) Generate(context.Context, modelrt.SDRequest, string) error { return nil }
+func (f *fakeSD) Exited() <-chan error                                      { return f.exited }
+func (f *fakeSD) ID() string                                                { return f.id }
+func (f *fakeSD) Close() {
+	if !f.closed {
+		f.closed = true
+		close(f.exited)
+	}
+}
+
+func TestSDSlotKeepsOneModelWarm(t *testing.T) {
+	s := testStudio(t)
+	var started []*fakeSD
+	s.sd.start = func(_ context.Context, _ string, _ *catalog.EngineSpec, spec *catalog.Spec, _ func(string)) (sdServer, error) {
+		if spec.ID == "refuses" {
+			return nil, errors.New("unknown argument: --preview")
+		}
+		f := &fakeSD{id: spec.ID, exited: make(chan error)}
+		started = append(started, f)
+		return f, nil
+	}
+	acquire := func(id string) sdServer {
+		t.Helper()
+		server, err := s.sd.acquire(context.Background(), "", nil, &catalog.Spec{ID: id}, func() {})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.sd.follow(nil)
+		return server
+	}
+
+	first := acquire("flux")
+	if again := acquire("flux"); again != first || len(started) != 1 {
+		t.Fatalf("a second job on the same model loaded it again (%d loads)", len(started))
+	}
+	acquire("wan")
+	if !started[0].closed || len(started) != 2 {
+		t.Fatal("switching models should unload the first before loading the second")
+	}
+	if server := acquire("refuses"); server != nil {
+		t.Fatal("a model sd-server refuses should fall back to sd-cli")
+	}
+	if server := acquire("refuses"); server != nil || len(started) != 2 {
+		t.Fatal("a refused model should not be retried on sd-server")
+	}
+
+	server := acquire("wan")
+	s.sd.busy = true
+	s.sd.unload("")
+	if server.(*fakeSD).closed {
+		t.Fatal("unload stopped a server mid-job")
+	}
+	s.sd.busy = false
+	s.sd.used = time.Now().Add(-2 * sdIdle)
+	s.sd.reapIdle()
+	if !server.(*fakeSD).closed {
+		t.Fatal("an idle server should be let go")
 	}
 }
 

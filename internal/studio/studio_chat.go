@@ -63,6 +63,8 @@ type chatSlot struct {
 	// swap it for a fake server.
 	start func(ctx context.Context, id string, ready func(url, key string)) error
 	idle  time.Duration
+	// Runs before a model starts loading, to free the GPU for it.
+	beforeLoad func()
 
 	mu     sync.Mutex
 	cur    *chatLoad
@@ -138,6 +140,9 @@ func (c *chatSlot) run(ctx context.Context, load *chatLoad, previous *chatLoad) 
 	if previous != nil {
 		previous.cancel()
 		<-previous.done
+	}
+	if c.beforeLoad != nil {
+		c.beforeLoad()
 	}
 	var once sync.Once
 	err := c.start(ctx, load.id, func(url, key string) {

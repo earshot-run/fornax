@@ -194,7 +194,7 @@ toolkit install); Vulkan for other GPUs, or an NVIDIA card whose driver is
 too old for the CUDA build; the CPU build otherwise. stable-diffusion.cpp
 publishes its Linux CUDA build only inside its container image
 (`ghcr.io/leejet/stable-diffusion.cpp:master-cuda`), so fornax takes the one
-layer holding `sd-cli` from it, plus llama.cpp's CUDA 12 runtime and
+layer holding `sd-cli` and `sd-server` from it, plus llama.cpp's CUDA 12 runtime and
 NVIDIA's `nvidia-nccl-cu12` wheel for the libraries the image's base layers
 would have supplied — about 1.1 GB in all. `fornax doctor` shows what was found and which
 build runs; `FORNAX_BACKEND=cpu|cuda|vulkan` forces one. Each build installs
@@ -287,11 +287,18 @@ bridge compile. Token counts in `test`/`bench` are estimates (~4 chars/token)
 — the framework doesn't expose them. Text only: `see`, `hear` and `judge`
 don't apply.
 
-Image and video run on a stable-diffusion.cpp build (`sd-cli`,
-foreground — no server) with engine binaries for macOS arm64, Linux x86_64
-and Windows x86_64 only. fornax ships that engine and no image or video
-model: you add the one you want, with the files and `sd-cli` arguments it
-needs saved beside it, and `imagine`/`animate` run it that way every time.
+Image and video run on a stable-diffusion.cpp build with engine binaries
+for macOS arm64, Linux x86_64 and Windows x86_64 only. `imagine`/`animate`
+run `sd-cli` once per call, loading the model each time. The studio keeps
+the model loaded in `sd-server` between jobs instead, so only the first
+image pays for loading; it lets the model go after 10 minutes without a
+job, when a chat or speech model needs the GPU, or when a different image
+model is picked. Its log is `~/.fornax/studio/sd-server.log`. A model whose
+saved arguments `sd-server` won't start with runs through `sd-cli` for the
+rest of that studio session, which is also the only path with a live
+sampling preview. fornax ships that engine and no image or video model: you
+add the one you want, with the files and `sd-cli` arguments it needs saved
+beside it, and every run uses them.
 
 ```
 fornax pull hf:Org/Repo/video.gguf --as my-video --kind video \

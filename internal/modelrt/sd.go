@@ -116,17 +116,22 @@ func PrepareSD(ctx context.Context, spec *catalog.Spec) (string, *catalog.Engine
 
 // A full checkpoint loads with -m; weights that arrive with companion files
 // are a standalone diffusion model.
-func sdArgs(root string, spec *catalog.Spec, prompt, outPath string, seed int64, extra []string) []string {
+func sdModelArgs(root string, spec *catalog.Spec) []string {
 	modelFlag := "-m"
 	if len(spec.Companions) > 0 {
 		modelFlag = "--diffusion-model"
 	}
 	args := []string{modelFlag, paths.ModelFinal(root, spec)}
-	if spec.Kind == catalog.Video {
-		args = append(args, "-M", "vid_gen")
-	}
 	for i := range spec.Companions {
 		args = append(args, "--"+spec.Companions[i].Flag, paths.FilePath(root, spec, &spec.Companions[i]))
+	}
+	return args
+}
+
+func sdArgs(root string, spec *catalog.Spec, prompt, outPath string, seed int64, extra []string) []string {
+	args := sdModelArgs(root, spec)
+	if spec.Kind == catalog.Video {
+		args = append(args, "-M", "vid_gen")
 	}
 	args = append(args, "-p", prompt, "-o", outPath, "--seed", strconv.FormatInt(seed, 10))
 	args = append(args, spec.Args...)

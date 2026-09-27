@@ -92,6 +92,8 @@ func (s *studio) speechGenerate(ctx context.Context, job *studioJob) error {
 			return fmt.Errorf("voice clip %s is gone — add it again", job.Voice)
 		}
 	}
+	// llama-tts needs the GPU a warm image model is holding.
+	s.sd.unload("")
 	s.setPhase(job, "loading")
 	out := s.outputPath(&job.studioItem)
 	cmd, err := modelrt.TTSCommand(ctx, s.root, eng, spec, job.Prompt, out, voice, job.Lang, 0)

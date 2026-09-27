@@ -126,6 +126,7 @@ type studio struct {
 	wake    chan struct{}
 
 	chat *chatSlot
+	sd   *sdSlot
 	// Driven over an ssh tunnel (-leash), so the page names this machine.
 	remote bool
 
@@ -152,7 +153,10 @@ func newStudio(root, key string) (*studio, error) {
 	s.generate = func(ctx context.Context, job *studioJob) error {
 		return s.kinds[job.Kind].generate(ctx, job)
 	}
+	s.sd = newSDSlot(dir)
 	s.chat = newChatSlot()
+	// One model on the GPU at a time: a chat model displaces an idle image one.
+	s.chat.beforeLoad = func() { s.sd.unload("") }
 	return s, nil
 }
 
@@ -203,6 +207,7 @@ func Serve(ctx context.Context, port int, noOpen, leash bool) error {
 	}
 	go s.work(ctx)
 	go s.chat.reap(ctx)
+	go s.reapSD(ctx)
 	go func() {
 		<-ctx.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -216,6 +221,7 @@ func Serve(ctx context.Context, port int, noOpen, leash bool) error {
 	}
 	err = srv.Serve(listener)
 	s.chat.stop()
+	s.sd.stop()
 	if !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
@@ -727,6 +733,20 @@ func (s *studio) work(ctx context.Context) {
 		}
 		err := s.generate(jobCtx, job)
 		s.finish(job, err)
+	}
+}
+
+func (s *studio) reapSD(ctx context.Context) {
+	tick := time.NewTicker(chatReapEvery)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			s.sd.stop()
+			return
+		case <-tick.C:
+			s.sd.reapIdle()
+		}
 	}
 }
 

@@ -68,7 +68,8 @@ func TestSDArgsCarryTheSavedRecipe(t *testing.T) {
 	spec := entry.spec()
 	got := strings.Join(sdArgs("/root", spec, "a boat", "out.webm", 7, []string{"--steps", "8"}), " ")
 	for _, want := range []string{
-		"--diffusion-model /root/models/my-video/video.gguf -M vid_gen",
+		"--diffusion-model /root/models/my-video/video.gguf",
+		"-M vid_gen",
 		"--vae /root/models/my-video/vae.safetensors",
 		"--t5xxl /root/models/my-video/umt5.gguf",
 		"--steps 4 --cfg-scale 1.0 --steps 8",

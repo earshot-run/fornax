@@ -1,12 +1,13 @@
 package studio
 
-// Studio's image and video kinds: one sd-cli run per job, its output
-// folded into live progress (step, rate, phase) as it streams.
+// Studio's image and video kinds: jobs run on a warm sd-server (sdSlot),
+// its output folded into live progress (step, rate, phase) as it streams.
 
 import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/earshot-run/fornax/internal/catalog"
@@ -105,8 +107,9 @@ func (s *studio) progress(job *studioJob, line string) {
 	s.notifyLocked()
 }
 
-// Install what the model needs, then one sd-cli run whose output streams through
-// progress() and into studio/last.log.
+// Install what the model needs, then generate on the warm sd-server,
+// loading it first when it holds some other model or none. A model whose
+// saved args sd-server won't start with runs through sd-cli instead.
 func (s *studio) sdGenerate(ctx context.Context, job *studioJob) error {
 	spec := modelrt.Model(job.Model)
 	if spec == nil {
@@ -116,6 +119,46 @@ func (s *studio) sdGenerate(ctx context.Context, job *studioJob) error {
 	if err != nil {
 		return err
 	}
+	var refs []string
+	for _, ref := range job.Refs {
+		path := s.refPath(ref)
+		if path == "" {
+			return fmt.Errorf("reference %s is gone", ref)
+		}
+		refs = append(refs, path)
+	}
+	server, err := s.sd.acquire(ctx, root, eng, spec, func() { s.setPhase(job, "loading") })
+	if err != nil {
+		return err
+	}
+	if server == nil {
+		return s.sdGenerateOnce(ctx, job, root, eng, spec, refs)
+	}
+	req := modelrt.SDRequest{
+		Prompt: job.Prompt, Negative: job.Negative,
+		Width: job.Width, Height: job.Height, Steps: job.Steps, Frames: job.Frames, Seed: job.Seed,
+	}
+	// Video models take a start frame; image models take references to edit from.
+	if job.Kind == "video" && len(refs) > 0 {
+		req.Init = refs[0]
+	} else {
+		req.Refs = refs
+	}
+	s.sd.follow(func(line string) { s.progress(job, line) })
+	defer s.sd.follow(nil)
+	if err := server.Generate(ctx, req, s.outputPath(&job.studioItem)); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("%w: see %s", err, s.sd.logPath)
+	}
+	return nil
+}
+
+// One sd-cli run whose output streams through progress() and into
+// studio/last.log, with a live preview for models that have a latent
+// projection.
+func (s *studio) sdGenerateOnce(ctx context.Context, job *studioJob, root string, eng *catalog.EngineSpec, spec *catalog.Spec, refs []string) error {
 	s.setPhase(job, "loading")
 	extra := []string{
 		"-W", strconv.Itoa(job.Width), "-H", strconv.Itoa(job.Height),
@@ -124,23 +167,16 @@ func (s *studio) sdGenerate(ctx context.Context, job *studioJob) error {
 	if job.Kind == "video" {
 		extra = append(extra, "--video-frames", strconv.Itoa(job.Frames))
 	}
-	// Models with a latent projection get a live preview; the rest warn
-	// once per step into the log and carry on.
+	// Models without one warm once per step into the log and carry on.
 	extra = append(extra, "--preview", "proj", "--preview-path", s.previewPath(&job.studioItem))
 	if job.Negative != "" {
 		extra = append(extra, "-n", job.Negative)
 	}
-	// Video models take a start frame (-i, image-to-video); image models
-	// take references to edit from (-r).
 	refFlag := "-r"
 	if job.Kind == "video" {
 		refFlag = "-i"
 	}
-	for _, ref := range job.Refs {
-		path := s.refPath(ref)
-		if path == "" {
-			return fmt.Errorf("reference %s is gone", ref)
-		}
+	for _, path := range refs {
 		extra = append(extra, refFlag, path)
 	}
 	cmd, _, err := modelrt.SDCommand(ctx, root, eng, spec, job.Prompt, s.outputPath(&job.studioItem), job.Seed, extra)
@@ -154,6 +190,179 @@ func (s *studio) sdGenerate(ctx context.Context, job *studioJob) error {
 		return fmt.Errorf("sd-cli finished without writing a file: see %s", filepath.Join(s.dir, "last.log"))
 	}
 	return nil
+}
+
+// The warm sd-server between generations: one model at a time, let go
+// after sdIdle without a job, when another model needs the GPU, or when the
+// studio stops. Only the queue's worker acquires it, so jobs never overlap.
+type sdSlot struct {
+	// Tests swap it for a fake.
+	start   func(ctx context.Context, root string, eng *catalog.EngineSpec, spec *catalog.Spec, output func(string)) (sdServer, error)
+	idle    time.Duration
+	logPath string
+
+	mu     sync.Mutex
+	cur    sdServer
+	busy   bool
+	used   time.Time
+	closed bool
+	// Models sd-server would not start with this session; they use sd-cli.
+	cold map[string]bool
+	// Where the server's output goes while a job runs.
+	line func(string)
+}
+
+type sdServer interface {
+	Generate(ctx context.Context, req modelrt.SDRequest, outPath string) error
+	Exited() <-chan error
+	Close()
+	ID() string
+}
+
+type warmSD struct{ *modelrt.SDServer }
+
+func (w warmSD) ID() string { return w.Spec.ID }
+
+const sdIdle = 10 * time.Minute
+
+func newSDSlot(dir string) *sdSlot {
+	return &sdSlot{
+		start: func(ctx context.Context, root string, eng *catalog.EngineSpec, spec *catalog.Spec, output func(string)) (sdServer, error) {
+			server, err := modelrt.StartSD(ctx, root, eng, spec, output)
+			if err != nil {
+				return nil, err
+			}
+			return warmSD{server}, nil
+		},
+		idle:    sdIdle,
+		logPath: filepath.Join(dir, "sd-server.log"),
+		cold:    map[string]bool{},
+	}
+}
+
+// The server holding spec, loaded now if need be (loading runs first).
+// nil with no error means spec runs through sd-cli.
+func (c *sdSlot) acquire(ctx context.Context, root string, eng *catalog.EngineSpec, spec *catalog.Spec, loading func()) (sdServer, error) {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return nil, errors.New("studio is shutting down")
+	}
+	if c.cold[spec.ID] {
+		c.mu.Unlock()
+		return nil, nil
+	}
+	previous := c.cur
+	if previous != nil && previous.ID() == spec.ID && alive(previous) {
+		c.busy, c.used = true, time.Now()
+		c.mu.Unlock()
+		return previous, nil
+	}
+	c.cur = nil
+	c.busy = true
+	c.mu.Unlock()
+	if previous != nil {
+		previous.Close()
+	}
+	loading()
+	server, err := c.startLogged(ctx, root, eng, spec)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err != nil {
+		c.busy = false
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		c.cold[spec.ID] = true
+		return nil, nil
+	}
+	if c.closed {
+		server.Close()
+		return nil, errors.New("studio is shutting down")
+	}
+	c.cur, c.used = server, time.Now()
+	return server, nil
+}
+
+// Starts the server with its output in studio/sd-server.log and, while a
+// job follows it, in that job's progress.
+func (c *sdSlot) startLogged(ctx context.Context, root string, eng *catalog.EngineSpec, spec *catalog.Spec) (sdServer, error) {
+	log, err := os.OpenFile(c.logPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	server, err := c.start(ctx, root, eng, spec, func(line string) {
+		fmt.Fprintln(log, line)
+		c.mu.Lock()
+		follow := c.line
+		c.mu.Unlock()
+		if follow != nil {
+			follow(line)
+		}
+	})
+	if err != nil {
+		fmt.Fprintf(log, "fornax: %v — %s runs through sd-cli for the rest of this studio session\n", err, spec.ID)
+		log.Close()
+		return nil, err
+	}
+	go func() {
+		<-server.Exited()
+		log.Close()
+	}()
+	return server, nil
+}
+
+// Sends the server's output lines to line until follow(nil); ends the job.
+func (c *sdSlot) follow(line func(string)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.line = line
+	if line == nil {
+		c.busy, c.used = false, time.Now()
+	}
+}
+
+func alive(server sdServer) bool {
+	select {
+	case <-server.Exited():
+		return false
+	default:
+		return true
+	}
+}
+
+// Lets the server go unless a job is on it; id "" matches any model.
+func (c *sdSlot) unload(id string) {
+	c.mu.Lock()
+	server := c.cur
+	if server == nil || c.busy || (id != "" && server.ID() != id) {
+		c.mu.Unlock()
+		return
+	}
+	c.cur = nil
+	c.mu.Unlock()
+	server.Close()
+}
+
+func (c *sdSlot) reapIdle() {
+	c.mu.Lock()
+	idle := c.cur != nil && !c.busy && time.Since(c.used) >= c.idle
+	c.mu.Unlock()
+	if idle {
+		c.unload("")
+	}
+}
+
+// Stops the server for good, a running job's included.
+func (c *sdSlot) stop() {
+	c.mu.Lock()
+	c.closed = true
+	server := c.cur
+	c.cur = nil
+	c.mu.Unlock()
+	if server != nil {
+		server.Close()
+	}
 }
 
 // Runs a child whose combined output feeds progress line by line and lands

@@ -461,8 +461,9 @@ func (s *studio) handleRemoveModel(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	// A loaded chat model holds its files open; let it go first.
+	// A loaded model holds its files open; let it go first.
 	s.chat.unload(id)
+	s.sd.unload(id)
 	cmd, err := s.fornaxCommand(r.Context(), "rm", id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
