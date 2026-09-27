@@ -115,7 +115,7 @@ reach it only through its exported API.
 | `studio/studio.go` + `studio/web/` | the studio server: loopback guard, queue, library; the page is embedded from `web/` |
 | `studio/studio_sd.go`, `studio/studio_voice.go` | the image/video and speech kinds the queue makes |
 | `studio/studio_chat.go` | chat over a warm model server |
-| `studio/hub.go` | the Models page: picks (a ref + companion recipe + download size each, saved at first fetch like any `pull hf:`), Hugging Face search and size preview, downloads run as `fornax pull … --events` |
+| `studio/hub.go` | the Models page: picks (a ref + companion recipe + download size each, saved at first fetch like any `pull hf:`), the most-downloaded Hugging Face GGUF repos, search and size preview, downloads run as `fornax pull … --events` |
 | `studio/studio_remote.go` | `studio -on host` — the studio on another machine over an ssh tunnel; the `-leash` that ends it with the connection |
 | `mcp/mcp.go` | `mcp` — newline JSON-RPC MCP server on stdio |
 

@@ -124,6 +124,7 @@ type hubDownload struct {
 
 func (s *studio) hubRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/hub/picks", s.handlePicks)
+	mux.HandleFunc("GET /api/hub/popular", s.handlePopular)
 	mux.HandleFunc("GET /api/hub/search", s.handleSearch)
 	mux.HandleFunc("GET /api/hub/preview", s.handlePreview)
 	mux.HandleFunc("POST /api/hub/downloads", s.handleDownload)
@@ -223,6 +224,25 @@ func splitRef(ref string) (repo, file string) {
 	return parts[0] + "/" + parts[1], parts[2]
 }
 
+func (s *studio) handlePopular(w http.ResponseWriter, r *http.Request) {
+	kind := r.URL.Query().Get("kind")
+	switch kind {
+	case "", "chat", "image", "speech", "video":
+	default:
+		http.Error(w, "unknown kind", http.StatusBadRequest)
+		return
+	}
+	if kind == "chat" {
+		kind = ""
+	}
+	hits, err := modelrt.PopularHF(r.Context(), kind, 20)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, http.StatusOK, hits)
+}
+
 func (s *studio) handleSearch(w http.ResponseWriter, r *http.Request) {
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	if query == "" {
@@ -255,6 +275,7 @@ type downloadRequest struct {
 	Key   string `json:"key"`
 	Ref   string `json:"ref"`
 	Bytes int64  `json:"bytes"`
+	Kind  string `json:"kind"`
 }
 
 func (s *studio) handleDownload(w http.ResponseWriter, r *http.Request) {
@@ -279,6 +300,13 @@ func (s *studio) handleDownload(w http.ResponseWriter, r *http.Request) {
 		pick = hubPick{Ref: req.Ref, Title: strings.TrimPrefix(req.Ref, "hf:"), Bytes: req.Bytes}
 		if file == "" {
 			pick.Title = strings.TrimSuffix(pick.Title, "/")
+		}
+		switch req.Kind {
+		case "", "image", "video", "speech":
+			pick.pullKind = req.Kind
+		default:
+			http.Error(w, "unknown kind", http.StatusBadRequest)
+			return
 		}
 	default:
 		http.Error(w, "download takes a pick or an hf:/ollama: ref", http.StatusBadRequest)

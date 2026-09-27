@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,8 +31,104 @@ type SearchHit struct {
 
 // GGUF repos matching query, most downloaded first, at most limit.
 func SearchHF(ctx context.Context, query string, limit int) ([]SearchHit, error) {
-	api := HFHost + "/api/models?search=" + url.QueryEscape(query) + "&filter=gguf&limit=40&full=false"
-	req, err := hfRequest(ctx, http.MethodGet, api)
+	q := url.Values{}
+	q.Set("search", query)
+	q.Set("filter", "gguf")
+	q.Set("limit", "40")
+	q.Set("full", "false")
+	return hfModels(ctx, q, limit)
+}
+
+// The most-downloaded GGUF repos. kind is "" for the overall list, or
+// image, speech, or video, which follow that pipeline on Hugging Face.
+// A search term makes the API include siblings; without one they arrive
+// only when full=true, and the page needs the .gguf names.
+func PopularHF(ctx context.Context, kind string, limit int) ([]SearchHit, error) {
+	if limit < 1 {
+		limit = 20
+	}
+	pipes := popularPipelines(kind)
+	if len(pipes) == 0 {
+		return popularQuery(ctx, "", limit+8, limit)
+	}
+	seen := map[string]bool{}
+	var all []SearchHit
+	for _, pipe := range pipes {
+		hits, err := popularQuery(ctx, pipe, limit+8, 0)
+		if err != nil {
+			return nil, err
+		}
+		for _, h := range hits {
+			if seen[h.Repo] {
+				continue
+			}
+			seen[h.Repo] = true
+			all = append(all, h)
+		}
+	}
+	sort.SliceStable(all, func(i, j int) bool { return all[i].Downloads > all[j].Downloads })
+	if len(all) > limit {
+		all = all[:limit]
+	}
+	return all, nil
+}
+
+func popularPipelines(kind string) []string {
+	switch kind {
+	case "image":
+		return []string{"text-to-image", "image-to-image"}
+	case "speech":
+		return []string{"text-to-speech"}
+	case "video":
+		return []string{"text-to-video", "image-to-video"}
+	default:
+		return nil
+	}
+}
+
+func popularQuery(ctx context.Context, pipeline string, fetch, limit int) ([]SearchHit, error) {
+	q := url.Values{}
+	q.Set("filter", "gguf")
+	q.Set("sort", "downloads")
+	q.Set("direction", "-1")
+	q.Set("limit", strconv.Itoa(fetch))
+	q.Set("full", "true")
+	if pipeline != "" {
+		q.Set("pipeline_tag", pipeline)
+	}
+	hits, err := hfModels(ctx, q, 0)
+	if err != nil {
+		return nil, err
+	}
+	kept := hits[:0]
+	for _, h := range hits {
+		if modelBundle(h.GGUFs) {
+			continue
+		}
+		kept = append(kept, h)
+	}
+	if limit > 0 && len(kept) > limit {
+		kept = kept[:limit]
+	}
+	return kept, nil
+}
+
+// A collection such as audio.cpp-gguf keeps dozens of unrelated models in
+// their own directories. One model and its quants stays in a few.
+func modelBundle(files []string) bool {
+	dirs := map[string]struct{}{}
+	for _, f := range files {
+		top := "."
+		if i := strings.IndexByte(f, '/'); i >= 0 {
+			top = f[:i]
+		}
+		dirs[top] = struct{}{}
+	}
+	return len(dirs) > 8
+}
+
+func hfModels(ctx context.Context, q url.Values, limit int) ([]SearchHit, error) {
+	req, err := hfRequest(ctx, http.MethodGet, HFHost+"/api/models?"+q.Encode())
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +163,7 @@ func SearchHF(ctx context.Context, query string, limit int) ([]SearchHit, error)
 		hits = append(hits, hit)
 	}
 	sort.SliceStable(hits, func(i, j int) bool { return hits[i].Downloads > hits[j].Downloads })
-	if len(hits) > limit {
+	if limit > 0 && len(hits) > limit {
 		hits = hits[:limit]
 	}
 	return hits, nil

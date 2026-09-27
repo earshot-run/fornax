@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/earshot-run/fornax/internal/modelrt"
 )
 
 func TestPickPullArgsCarryTheRecipe(t *testing.T) {
@@ -30,6 +32,56 @@ func TestPickPullArgsCarryTheRecipe(t *testing.T) {
 		if _, file := splitRef(p.Ref); file == "" {
 			t.Errorf("%s: a pick names its exact file, so installed-ness can be matched", p.Key)
 		}
+	}
+}
+
+func TestPopularRoute(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`[{"id":"org/Model-GGUF","downloads":12,"likes":1,"siblings":[{"rfilename":"m.gguf"}]}]`))
+	}))
+	defer srv.Close()
+	old := modelrt.HFHost
+	modelrt.HFHost = srv.URL
+	t.Cleanup(func() { modelrt.HFHost = old })
+
+	s := testStudio(t)
+	h := s.handler(7340)
+	rec := studioGet(t, h, "GET", "/api/hub/popular", "127.0.0.1:7340", func(r *http.Request) {
+		r.AddCookie(&http.Cookie{Name: studioCookie, Value: s.key})
+	})
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"repo":"org/Model-GGUF"`) || !strings.Contains(rec.Body.String(), `"m.gguf"`) {
+		t.Fatalf("popular: %d %s", rec.Code, rec.Body)
+	}
+	if rec := studioGet(t, h, "GET", "/api/hub/popular?kind=nope", "127.0.0.1:7340", func(r *http.Request) {
+		r.AddCookie(&http.Cookie{Name: studioCookie, Value: s.key})
+	}); rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad kind: %d", rec.Code)
+	}
+}
+
+func TestDownloadKeepsTheKind(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "args")
+	t.Setenv("FORNAX_ARGS_OUT", out)
+	s := testStudio(t)
+	s.fornaxPath = fakeFornax(t, `
+printf '%s\n' "$@" > "$FORNAX_ARGS_OUT"
+echo '{"event":"installed","model":"hf-pic","kind":"image"}'
+`)
+	h := s.handler(7340)
+	cookie := func(r *http.Request) { r.AddCookie(&http.Cookie{Name: studioCookie, Value: s.key}) }
+	rec := studioPost(t, h, "/api/hub/downloads", `{"ref":"hf:org/Picture","kind":"image"}`, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("download: %d %s", rec.Code, rec.Body)
+	}
+	if d := waitDownload(t, s, func(d *hubDownload) bool { return d.State != "running" }); d.State != "done" {
+		t.Fatalf("download ended %+v", *d)
+	}
+	body, err := os.ReadFile(out)
+	if err != nil || !strings.Contains(string(body), "--kind") || !strings.Contains(string(body), "image") {
+		t.Fatalf("pull args %q (%v)", body, err)
+	}
+	if rec := studioPost(t, h, "/api/hub/downloads", `{"ref":"hf:org/Picture","kind":"rm"}`, cookie); rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad kind: %d %s", rec.Code, rec.Body)
 	}
 }
 

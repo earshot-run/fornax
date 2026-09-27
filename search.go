@@ -1,8 +1,9 @@
 package main
 
-// `fornax search <query…>` — the Hugging Face model API filtered to GGUF
-// repos, ranked by downloads. A repo with exactly one .gguf file prints the
-// ready `fornax pull hf:…` command; multi-file repos point at the file tree.
+// `fornax search [query…]` — the Hugging Face model API filtered to GGUF
+// repos, ranked by downloads. No query lists the most-downloaded repos.
+// A repo with exactly one .gguf file prints the ready `fornax pull hf:…`
+// command; multi-file repos point at the file tree.
 
 import (
 	"context"
@@ -29,18 +30,31 @@ func humanCount(n int64) string {
 
 func cmdSearch(ctx context.Context, args []string) error {
 	query := strings.TrimSpace(strings.Join(args, " "))
+	var (
+		hits []modelrt.SearchHit
+		err  error
+	)
 	if query == "" {
-		return fmt.Errorf("usage: fornax search <query…>")
+		hits, err = modelrt.PopularHF(ctx, "", hfSearchLimit)
+	} else {
+		hits, err = modelrt.SearchHF(ctx, query, hfSearchLimit)
 	}
-	hits, err := modelrt.SearchHF(ctx, query, hfSearchLimit)
 	if err != nil {
 		return err
 	}
 	if len(hits) == 0 {
-		fmt.Printf("no GGUF repos matching %q\n", query)
+		if query == "" {
+			fmt.Println("no GGUF repos listed")
+		} else {
+			fmt.Printf("no GGUF repos matching %q\n", query)
+		}
 		return nil
 	}
-	fmt.Fprintf(os.Stderr, "%s\n", ui.Dim(fmt.Sprintf("%d GGUF repos for %q, by downloads", len(hits), query)))
+	heading := fmt.Sprintf("%d most-downloaded GGUF repos", len(hits))
+	if query != "" {
+		heading = fmt.Sprintf("%d GGUF repos for %q, by downloads", len(hits), query)
+	}
+	fmt.Fprintf(os.Stderr, "%s\n", ui.Dim(heading))
 	width := 0
 	for i := range hits {
 		if len(hits[i].Repo) > width {

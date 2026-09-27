@@ -361,6 +361,7 @@ func (s *studio) handleAbout(w http.ResponseWriter, _ *http.Request) {
 type studioModel struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
+	Repo    string `json:"repo,omitempty"`
 	Kind    string `json:"kind"`
 	Runtime string `json:"runtime"`
 	Params  string `json:"params,omitempty"`
@@ -400,7 +401,7 @@ func (s *studio) handleModels(w http.ResponseWriter, _ *http.Request) {
 			continue
 		}
 		models = append(models, studioModel{
-			ID: spec.ID, Name: modelLabel(spec), Kind: spec.Kind.String(), Runtime: spec.Runtime.String(),
+			ID: spec.ID, Name: modelLabel(spec), Repo: spec.Repo, Kind: spec.Kind.String(), Runtime: spec.Runtime.String(),
 			Params: spec.Params, Quant: spec.Quant(),
 			Bytes: spec.TotalBytes(), Fit: catalog.FitFor(spec.TotalBytes(), memory).String(), Steps: savedSteps(spec.Args),
 			Chat: modelrt.RequireChat(spec) == nil && spec.Kind != catalog.Decision,

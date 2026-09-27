@@ -35,11 +35,11 @@ image by giving it a reference, or clone a voice from a few seconds of audio.
 
 ## Models
 
-Open **Models** in the studio. It suggests a few good models for chat,
-images, voice and video, tells you which ones fit your computer, and
-downloads them with one click. You can also search Hugging Face for any
-GGUF model and check its size before you download it. Gated models like
-Llama need a Hugging Face token; add yours on the same page.
+Open **Models** in the studio. Chat, image, voice and video each list the
+most-downloaded models of that kind on Hugging Face, plus a few picks that
+fit your computer, and either downloads with one click. Search finds any
+other GGUF model and can check its size before you download it. Gated
+models like Llama need a Hugging Face token; add yours on the same page.
 
 From a terminal it's one line, with any model on Hugging Face or Ollama:
 

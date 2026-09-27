@@ -60,7 +60,7 @@ Run models:
 
 Workbench:
   show       Inspect a model's GGUF header — arch, params, quant, template
-  search     Find GGUF repos on Hugging Face to pull
+  search     GGUF repos on Hugging Face — no query lists the most downloaded
   version    Print the build version
   upgrade    Check for a newer fornax release
   mcp        Serve MCP on stdio — agents call ask/see/hear/embed/imagine/animate/say/models

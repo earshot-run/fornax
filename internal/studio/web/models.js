@@ -1,6 +1,6 @@
 "use strict";
-// Models mode: picks that fit this machine, Hugging Face search, downloads
-// with live progress, and what is already installed.
+// Models mode: picks that fit this machine, popular Hugging Face models,
+// search, downloads with live progress, and what is already installed.
 
 (() => {
   const KINDS = [
@@ -14,7 +14,7 @@
   const MODE = { chat: "chat", image: "image", speech: "voice", video: "video" };
   const FIT = { "fits": ["fits", "Fits"], "tight": ["tight", "Tight fit"], "won't fit": ["wont", "Too big"] };
 
-  const state = { token: null, tokenOpen: false, kind: store.get("modelsKind", "all"), picks: [], memory: 0, backend: "", query: "", results: null, searching: false, previews: {}, downloads: [] };
+  const state = { token: null, tokenOpen: false, kind: store.get("modelsKind", "all"), picks: [], popular: {}, popularError: {}, memory: 0, backend: "", query: "", results: null, searching: false, previews: {}, downloads: [] };
   const ui = {};
 
   const fmtBytes = (n) => {
@@ -79,7 +79,7 @@
     ui.tabs.replaceChildren(...KINDS.map((k) => {
       const b = el("button", { type: "button", textContent: k.label });
       b.setAttribute("aria-pressed", String(state.kind === k.id));
-      b.onclick = () => { state.kind = k.id; store.set("modelsKind", k.id); render(); };
+      b.onclick = () => { state.kind = k.id; store.set("modelsKind", k.id); render(); loadPopular(k.id); };
       return b;
     }));
     const installed = Studio.models.length;
@@ -133,36 +133,67 @@
     }));
   }
 
+  function installedId(repo) {
+    return Studio.models.find((m) => m.repo === repo)?.id || "";
+  }
+
+  // A curated pick for this repo downloads its companion files and engine arguments.
+  function pickForRepo(repo) {
+    return state.picks.find((p) => p.ref.startsWith("hf:" + repo + "/"));
+  }
+
+  function hitRow(h, kindHint) {
+    const ref = "hf:" + h.repo;
+    const id = installedId(h.repo);
+    const pv = state.previews[ref];
+    const previewKind = pv?.preview?.kind;
+    const kind = id
+      ? kindOf(Studio.models.find((m) => m.id === id))
+      : previewKind === "image" || previewKind === "speech" || previewKind === "video" ? previewKind : (kindHint || "chat");
+    const pick = pickForRepo(h.repo);
+    const request = pick ? { key: pick.key } : { ref, bytes: pv?.preview?.bytes || 0, ...(kindHint ? { kind: kindHint } : {}) };
+    const right = [];
+    if (!h.ggufs.length) {
+      right.push(el("span", { className: "muted", textContent: "no GGUF files" }));
+    } else {
+      if (pv?.preview) {
+        right.push(el("span", { className: "muted", textContent: `${pv.preview.file.split("/").pop()} · ${fmtBytes(pv.preview.bytes)}` }), fitPill(pv.fit));
+      } else if (pv?.loading) {
+        right.push(el("span", { className: "muted", textContent: "Checking…" }));
+      } else if (pv?.error) {
+        right.push(el("span", { className: "card-error", textContent: pv.error }));
+      } else {
+        const check = el("button", { type: "button", className: "text-btn", textContent: "Check size" });
+        check.onclick = () => preview(ref);
+        right.push(check);
+      }
+      right.push(actionFor({ ref: pick ? pick.ref : ref, key: pick?.key }, id, kind, request));
+    }
+    return el("div", { className: "model-row result-row" },
+      el("div", { className: "model-row-main" },
+        el("strong", { textContent: h.repo }),
+        el("span", { className: "muted", textContent: `${fmtCount(h.downloads)} downloads · ${h.ggufs.length} GGUF file${h.ggufs.length === 1 ? "" : "s"}` })),
+      el("div", { className: "result-right" }, ...right));
+  }
+
+  function renderPopular() {
+    ui.popular.hidden = !!state.query;
+    if (state.query) return;
+    const list = state.popular[state.kind];
+    if (list == null) { ui.popularList.replaceChildren(el("p", { className: "muted", textContent: "Loading popular models…" })); return; }
+    if (state.popularError[state.kind]) { ui.popularList.replaceChildren(el("p", { className: "muted", textContent: "Couldn't reach Hugging Face." })); return; }
+    if (!list.length) { ui.popularList.replaceChildren(el("p", { className: "muted", textContent: "No popular models in this kind." })); return; }
+    const hint = state.kind === "image" || state.kind === "speech" || state.kind === "video" ? state.kind : "";
+    ui.popularList.replaceChildren(...list.map((h) => hitRow(h, hint)));
+  }
+
   function renderResults() {
     ui.results.hidden = !state.query;
     if (!state.query) return;
     if (state.searching && !state.results) { ui.resultList.replaceChildren(el("p", { className: "muted", textContent: "Searching Hugging Face…" })); return; }
     const hits = state.results || [];
     if (!hits.length) { ui.resultList.replaceChildren(el("p", { className: "muted", textContent: `No GGUF models match “${state.query}”.` })); return; }
-    ui.resultList.replaceChildren(...hits.map((h) => {
-      const ref = "hf:" + h.repo;
-      const pv = state.previews[ref];
-      const right = [];
-      if (!h.ggufs.length) {
-        right.push(el("span", { className: "muted", textContent: "no GGUF files" }));
-      } else if (!pv) {
-        const check = el("button", { type: "button", className: "text-btn", textContent: "Check size" });
-        check.onclick = () => preview(ref);
-        right.push(check);
-      } else if (pv.loading) {
-        right.push(el("span", { className: "muted", textContent: "Checking…" }));
-      } else if (pv.error) {
-        right.push(el("span", { className: "card-error", textContent: pv.error }));
-      } else {
-        right.push(el("span", { className: "muted", textContent: `${pv.preview.file.split("/").pop()} · ${fmtBytes(pv.preview.bytes)}` }), fitPill(pv.fit),
-          actionFor({ ref }, null, pv.preview.kind === "text" || pv.preview.kind === "vision" || pv.preview.kind === "audio" ? "chat" : pv.preview.kind, { ref, bytes: pv.preview.bytes }));
-      }
-      return el("div", { className: "model-row result-row" },
-        el("div", { className: "model-row-main" },
-          el("strong", { textContent: h.repo }),
-          el("span", { className: "muted", textContent: `${fmtCount(h.downloads)} downloads · ${h.ggufs.length} GGUF file${h.ggufs.length === 1 ? "" : "s"}` })),
-        el("div", { className: "result-right" }, ...right));
-    }));
+    ui.resultList.replaceChildren(...hits.map((h) => hitRow(h, "")));
   }
 
   function renderDownloads() {
@@ -227,8 +258,24 @@
     renderHead();
     renderDownloads();
     renderPicks();
+    renderPopular();
     renderInstalled();
     renderResults();
+  }
+
+  async function loadPopular(kind = state.kind, force = false) {
+    if (!force && state.popular[kind] && !state.popularError[kind]) return;
+    const qkind = kind === "image" || kind === "speech" || kind === "video" ? kind : "";
+    try {
+      const res = await fetch("/api/hub/popular" + (qkind ? `?kind=${qkind}` : ""));
+      if (!res.ok) throw new Error();
+      state.popular[kind] = await res.json();
+      state.popularError[kind] = false;
+    } catch {
+      state.popular[kind] = [];
+      state.popularError[kind] = true;
+    }
+    if (state.kind === kind) render();
   }
 
   async function loadPicks() {
@@ -292,13 +339,16 @@
       ui.downloads = el("section", { className: "models-section" }, el("h2", { textContent: "Downloading" }), ui.downloadList);
       ui.pickGrid = el("div", { className: "pick-grid" });
       ui.picks = el("section", { className: "models-section" }, el("h2", { textContent: "Picks for this machine" }), ui.pickGrid);
+      ui.popularList = el("div", { className: "model-list" });
+      ui.popular = el("section", { className: "models-section" }, el("h2", { textContent: "Popular on Hugging Face" }), ui.popularList);
       ui.resultList = el("div", { className: "model-list" });
       ui.results = el("section", { className: "models-section" }, el("h2", { textContent: "From Hugging Face" }), ui.resultList);
       ui.installedList = el("div", { className: "model-list" });
       ui.installed = el("section", { className: "models-section" }, el("h2", { textContent: "On this machine" }), ui.installedList);
-      section.append(el("div", { className: "models-page" }, head, ui.tabs, ui.downloads, ui.results, ui.picks, ui.installed));
+      section.append(el("div", { className: "models-page" }, head, ui.tabs, ui.downloads, ui.results, ui.picks, ui.popular, ui.installed));
       fetch("/api/about").then((r) => (r.ok ? r.json() : {})).then((a) => { state.backend = a.backend || ""; render(); }).catch(() => {});
       loadPicks();
+      loadPopular();
       loadToken();
     },
     models() { render(); },
@@ -309,7 +359,7 @@
       if (state.downloads.some((d) => d.state === "done" && before.find((b) => b.id === d.id && b.state === "running"))) loadPicks();
       render();
     },
-    show() { document.title = "Models · fornax studio"; loadPicks(); },
+    show() { document.title = "Models · fornax studio"; loadPicks(); loadPopular(state.kind, true); },
     filter(kind) { state.kind = kind; render(); },
   });
 })();

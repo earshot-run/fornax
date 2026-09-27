@@ -25,7 +25,7 @@ what agents should read.
 | `fornax see <model> <image> [question]` | Ask a vision model about a png/jpg/webp/gif |
 | `fornax hear <model> <audio> [question]` | Ask an audio model about a take; transcribes by default |
 | `fornax imagine <model> "prompt"` | Generate an image with a model you added — `-o`, `-image`, `-steps`, `-seed`, `-size WxH`, `-neg` |
-| `fornax studio` | The browser studio: chat (text, vision and audio models), image, video and voice, plus a Models page that suggests picks for this machine, searches Hugging Face and downloads with live progress. Loopback only, behind your key; images live in `~/.fornax/studio` (each page's Delete all clears that kind). `-on [user@]host` runs it on another machine (a home GPU box, a rented cloud GPU) over ssh and opens it here through a tunnel — the remote stays loopback-only, and if it has no fornax yet, run from a terminal it offers to install the same release there (install.sh, sha256-checked) |
+| `fornax studio` | The browser studio: chat (text, vision and audio models), image, video and voice, plus a Models page that browses the most-downloaded chat, image, voice and video models on Hugging Face, suggests picks for this machine, searches, and downloads with live progress. Loopback only, behind your key; images live in `~/.fornax/studio` (each page's Delete all clears that kind). `-on [user@]host` runs it on another machine (a home GPU box, a rented cloud GPU) over ssh and opens it here through a tunnel — the remote stays loopback-only, and if it has no fornax yet, run from a terminal it offers to install the same release there (install.sh, sha256-checked) |
 | `fornax animate <model> "prompt"` | Generate a video clip with a model you added — the same flags plus `-frames` |
 | `fornax say <model> "text"` | Speak text to a WAV — `-o out.wav` (or `-` for stdout), `-voice ref.wav` clones a voice, `-lang en\|zh\|…` |
 | `fornax embed <model> [text]` | Turn text into a vector — one-line JSON on stdout |
@@ -50,7 +50,7 @@ what agents should read.
 | Command | What it does |
 | --- | --- |
 | `fornax show <model>` | Model card + a look inside the artifact — GGUF metadata (arch, params, quant, context), safetensors header, kev checkpoint |
-| `fornax search <query>` | GGUF repos on Hugging Face ranked by downloads; single-file repos print the ready `pull hf:` command |
+| `fornax search [query]` | GGUF repos on Hugging Face ranked by downloads. No query lists the most-downloaded; a query ranks matches. Single-file repos print the ready `pull hf:` command |
 | `fornax mcp` | MCP server on stdio — agents call ask/see/hear/embed/imagine/say/models as tools |
 | `fornax version` / `upgrade` | Build stamp; check for a newer release |
 | `fornax completion <zsh\|bash\|fish>` | Shell completion script on stdout |
@@ -208,7 +208,7 @@ Q8_0…). Name the file to be exact: `hf:Org/Repo/Model-Q8_0.gguf`. Split
 archives (`-00001-of-0000N`) pull every part; a repo `mmproj-*.gguf`
 projector attaches itself for vision, audio and speech models; the kind is
 inferred from the name (`rerank`, `embed`, `tts`, `vl`, `asr`…) and `--kind`
-overrides it. `search <query>` ranks GGUF repos by downloads.
+overrides it. `search` with no query lists the most-downloaded GGUF repos; `search <query>` ranks matches.
 
 Everything lands in `custom.json` with a derived id — `hf:Qwen/Qwen3-4B-GGUF`
 becomes `hf-qwen3-4b` — which `list`/`ask`/`run`/`rm`/`clean` treat like a
