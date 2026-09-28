@@ -111,7 +111,8 @@ for you.
 
 Everything above also works from the terminal: `ask`, `see`, `hear`,
 `imagine`, `say`, `embed`, `judge`, `run` and more, plus an MCP server for agents.
-The full command reference and how it all works is in
+In [Earshot](https://earshot.run), the [fornax plugin](plugin) hands that
+server to every agent you run. The full command reference and how it all works is in
 [docs/reference.md](docs/reference.md).
 
 ## License

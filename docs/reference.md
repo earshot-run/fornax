@@ -51,7 +51,7 @@ what agents should read.
 | --- | --- |
 | `fornax show <model>` | Model card + a look inside the artifact — GGUF metadata (arch, params, quant, context), safetensors header, kev checkpoint |
 | `fornax search [query]` | GGUF repos on Hugging Face ranked by downloads. No query lists the most-downloaded; a query ranks matches. Single-file repos print the ready `pull hf:` command |
-| `fornax mcp` | MCP server on stdio — agents call ask/see/hear/embed/imagine/say/models as tools |
+| `fornax mcp` | MCP server on stdio — agents call ask/see/hear/embed/imagine/animate/say/models as tools. `FORNAX_OUT_DIR` holds made files that have no absolute `out` |
 | `fornax version` / `upgrade` | Build stamp; check for a newer release |
 | `fornax completion <zsh\|bash\|fish>` | Shell completion script on stdout |
 

@@ -73,7 +73,7 @@ fornax 会按硬件选择 Metal、CUDA、Vulkan 或 CPU 版本。`fornax doctor`
 
 ## 脚本与智能体
 
-终端还提供 `ask`、`see`、`hear`、`imagine`、`say`、`embed`、`judge`、`run` 等命令，以及供智能体使用的 MCP 服务。完整参数与行为请查阅英文[命令参考](docs/reference.md)。
+终端还提供 `ask`、`see`、`hear`、`imagine`、`say`、`embed`、`judge`、`run` 等命令，以及供智能体使用的 MCP 服务。在 [Earshot](https://earshot.run) 中，[fornax 插件](plugin)会把这个服务提供给你运行的每个智能体。完整参数与行为请查阅英文[命令参考](docs/reference.md)。
 
 ## 许可证
 

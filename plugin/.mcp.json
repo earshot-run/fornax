@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "fornax": {
+      "command": "fornax",
+      "args": ["mcp"],
+      "env": {
+        "FORNAX_OUT_DIR": "${HOME}/.earshot/media"
+      },
+      "tools": {
+        "imagine": { "approval_mode": "ask" },
+        "animate": { "approval_mode": "ask" },
+        "say": { "approval_mode": "ask" }
+      }
+    }
+  }
+}

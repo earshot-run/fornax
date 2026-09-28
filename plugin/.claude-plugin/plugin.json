@@ -1,0 +1,8 @@
+{
+  "name": "fornax",
+  "displayName": "fornax",
+  "version": "0.2.0",
+  "description": "Local models as tools for every agent: look at images, listen to recordings, make images, video and speech, and embed text. Nothing leaves your computer.",
+  "homepage": "https://github.com/earshot-run/fornax/tree/main/plugin#readme",
+  "repository": "https://github.com/earshot-run/fornax"
+}

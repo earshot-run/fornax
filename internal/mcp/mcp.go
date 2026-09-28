@@ -422,9 +422,9 @@ func mcpSD(ctx context.Context, args json.RawMessage, verb string, kind catalog.
 	if spec.Runtime != catalog.SD || spec.Kind != kind {
 		return "", fmt.Errorf("%s cannot %s — add a model with `fornax pull hf:… --kind %s`", spec.ID, verb, kind)
 	}
-	out := in.Out
-	if out == "" {
-		out = fmt.Sprintf("%s-%d.%s", verb, time.Now().Unix(), ext)
+	out, err := outPath(in.Out, verb, ext)
+	if err != nil {
+		return "", err
 	}
 	var extra []string
 	if in.Image != "" {
@@ -474,8 +474,8 @@ func mcpSay(ctx context.Context, args json.RawMessage) (string, error) {
 			return "", fmt.Errorf("voice %s is not a readable audio file", in.Voice)
 		}
 	}
-	if in.Out == "" {
-		in.Out = fmt.Sprintf("say-%d.wav", time.Now().Unix())
+	if in.Out, err = outPath(in.Out, "say", "wav"); err != nil {
+		return "", err
 	}
 	root, err := modelrt.PrepareSpeech(ctx, spec, eng)
 	if err != nil {
@@ -486,7 +486,27 @@ func mcpSay(ctx context.Context, args json.RawMessage) (string, error) {
 	}); err != nil {
 		return "", err
 	}
+	if abs, err := filepath.Abs(in.Out); err == nil {
+		in.Out = abs
+	}
 	return "wrote " + in.Out, nil
+}
+
+// outPath names a generated file. FORNAX_OUT_DIR, when set, holds the default
+// name and any relative out, because a client may start this server in a
+// folder it later replaces, like a plugin's install directory.
+func outPath(out, verb, ext string) (string, error) {
+	if out == "" {
+		out = fmt.Sprintf("%s-%d.%s", verb, time.Now().Unix(), ext)
+	}
+	dir := os.Getenv("FORNAX_OUT_DIR")
+	if dir == "" || filepath.IsAbs(out) {
+		return out, nil
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, out), nil
 }
 
 func mcpList() (string, error) {
