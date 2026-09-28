@@ -23,7 +23,10 @@ Invariants not to break:
 
 - Nothing is pinned: engines come from the newest upstream release that
   carries the build, python runtimes from their repo's HEAD, models from the
-  revision their ref names (main by default). There is no digest check.
+  revision their ref names (main by default). Weights and projectors from
+  Hugging Face are checked against the sha256 Hugging Face publishes (the LFS
+  etag), and Ollama layers against their OCI blob digest; engine builds and
+  GitHub release assets publish no digest and are not checked.
 - Servers bind 127.0.0.1 only and require the generated key; child
   processes get a scrubbed environment.
 - stdout carries only the payload — status/spinners/progress go to stderr;

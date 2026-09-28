@@ -6,7 +6,10 @@ package modelrt
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -86,10 +89,36 @@ func fetchFile(ctx context.Context, root string, spec *catalog.Spec, file *catal
 	if err := os.Rename(part, final); err != nil {
 		return 0, fmt.Errorf("could not install model: %w", err)
 	}
+	if err := verifyDigest(final, file.SHA256); err != nil {
+		os.Remove(final)
+		return 0, err
+	}
 	if info, err := os.Stat(final); err == nil {
 		size = info.Size()
 	}
 	return size, nil
+}
+
+// Check a downloaded file against the sha256 its source published. An empty
+// want means the source publishes none (a GitHub release asset, a file
+// without LFS metadata) and nothing is checked.
+func verifyDigest(path, want string) error {
+	if want == "" {
+		return nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return fmt.Errorf("could not read %s back to verify it: %w", filepath.Base(path), err)
+	}
+	if got := hex.EncodeToString(hash.Sum(nil)); got != want {
+		return fmt.Errorf("%s did not match its published sha256 (got %s…, want %s…) — the download is corrupt or the source changed; pull again", filepath.Base(path), got[:12], want[:12])
+	}
+	return nil
 }
 
 // The kev checkpoint: fetch the tarball, keep it, unpack the kev-<name>/
@@ -145,8 +174,10 @@ func scrubbedEnv(root string) []string {
 }
 
 // logPath "" inherits the terminal (the `run` case); a path redirects the
-// server's chatter to a file so one-shot commands keep stdout clean.
-func spawnServer(root string, eng *catalog.EngineSpec, spec *catalog.Spec, port int, ctxSize int, logPath string) (*exec.Cmd, error) {
+// server's chatter to a file so one-shot commands keep stdout clean. extra
+// carries `run -- <flags>` through verbatim, after the model's own saved
+// arguments, so a caller can override any of the defaults above.
+func spawnServer(root string, eng *catalog.EngineSpec, spec *catalog.Spec, port int, ctxSize int, logPath string, extra []string) (*exec.Cmd, error) {
 	binary := paths.EngineBinary(root, eng, eng.Binary)
 	args := []string{
 		"--model", paths.ModelFinal(root, spec),
@@ -182,6 +213,9 @@ func spawnServer(root string, eng *catalog.EngineSpec, spec *catalog.Spec, port 
 		// The layer count is ignored where there is no offload backend.
 		args = append(args, "--n-gpu-layers", "999")
 	}
+	// A model's saved arguments, then whatever `run --` passed: last wins.
+	args = append(args, spec.Args...)
+	args = append(args, extra...)
 	cmd := exec.Command(binary, args...)
 	cmd.Dir = filepath.Dir(binary)
 	cmd.Env = engineEnv(root, binary)
@@ -334,7 +368,10 @@ func requireServer(spec *catalog.Spec) error {
 
 // `fornax run`: pull, verify, spawn on the model's own port (or port), then
 // hold until Ctrl-C, the idle limit, or the --events reader going away.
-func Serve(ctx context.Context, id string, port, ctxSize int, noConnect bool, idle time.Duration) error {
+// extra is `run -- <flags>`, handed to llama-server unchanged. ctxSet marks
+// an explicit -ctx-size, which is never lowered to the model's trained
+// length (a user may run a short-context model with rope scaling).
+func Serve(ctx context.Context, id string, port, ctxSize int, noConnect bool, idle time.Duration, extra []string, ctxSet bool) error {
 	spec, eng, err := Resolve(ctx, id)
 	if err != nil {
 		return err
@@ -381,6 +418,9 @@ func Serve(ctx context.Context, id string, port, ctxSize int, noConnect bool, id
 			fmt.Fprintf(os.Stderr, "note: -idle is ignored for %s models (no activity counters)\n", spec.Runtime)
 			idle = 0
 		}
+		if len(extra) > 0 {
+			fmt.Fprintf(os.Stderr, "note: flags after -- are ignored for %s models (they go to llama-server)\n", spec.Runtime)
+		}
 		key, err = paths.EnsureKey(root)
 		if err == nil {
 			if spec.Runtime == catalog.Kev {
@@ -394,7 +434,15 @@ func Serve(ctx context.Context, id string, port, ctxSize int, noConnect bool, id
 		if err != nil {
 			return err
 		}
-		cmd, err = spawnServer(root, eng, spec, servePort, ctxSize, logPath)
+		if !ctxSet {
+			if lowered, note := contextFor(root, spec, ctxSize); note != "" {
+				ctxSize = lowered
+				fmt.Fprintln(os.Stderr, ui.Dim(note))
+			}
+		} else if trained, ok := ModelContext(root, spec); ok && ctxSize > trained {
+			fmt.Fprintln(os.Stderr, ui.Dim(fmt.Sprintf("note: %s was trained for %d tokens; %d may degrade its output", spec.ID, trained, ctxSize)))
+		}
+		cmd, err = spawnServer(root, eng, spec, servePort, ctxSize, logPath, extra)
 	}
 	if err != nil {
 		return err

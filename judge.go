@@ -21,51 +21,10 @@ import (
 	"github.com/earshot-run/fornax/internal/ui"
 )
 
-// A typed question in the request. Criteria is a list (score) or a map of
-// label→description (choice); noul needs neither.
-type typedQuestion struct {
-	Kind         string
-	Instructions string
-	Options      []string
-}
-
-func (q *typedQuestion) json() map[string]any {
-	body := map[string]any{"type": q.Kind, "instructions": q.Instructions}
-	switch q.Kind {
-	case "choice":
-		criteria := map[string]any{}
-		for _, opt := range q.Options {
-			criteria[opt] = opt
-		}
-		body["criteria"] = criteria
-	case "score":
-		body["criteria"] = q.Options
-	}
-	return body
-}
-
-func systemOne(ctx context.Context, url, key, model, state string, questions map[string]*typedQuestion) (map[string]any, error) {
-	qs := map[string]any{}
-	for id, q := range questions {
-		qs[id] = q.json()
-	}
-	body, _ := json.Marshal(map[string]any{
-		"model": model, "state": state, "questions": qs,
-	})
-	resp, err := openai.Post(ctx, url+"/systemone", key, body)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return nil, openai.Error(resp)
-	}
-	var parsed map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		return nil, fmt.Errorf("the reply was not readable: %w", err)
-	}
-	return parsed, nil
-}
+// A typed question in the request: noul (yes/no), choice (one of a set) or
+// score (a level on an ordered scale). The wire shape lives in openai, which
+// both `judge` and the MCP server speak.
+type typedQuestion = openai.TypedQuestion
 
 // Print the answers as probability bars: one headline per question, then the
 // option distribution underneath when there is one.
@@ -173,7 +132,7 @@ const judgeProbeState = "Shoes arrived two weeks late and in the wrong size. Als
 func runDecisionTest(ctx context.Context, spec *catalog.Spec) error {
 	return modelrt.WithServer(ctx, spec, nil, func(url, key string) error {
 		qs, order := judgeProbeQuestions()
-		reply, err := systemOne(ctx, url, key, modelrt.DecisionModel(spec), judgeProbeState, qs)
+		reply, err := openai.SystemOne(ctx, url, key, modelrt.DecisionModel(spec), judgeProbeState, qs)
 		if err != nil {
 			return err
 		}
@@ -190,7 +149,7 @@ func runDecisionBench(ctx context.Context, spec *catalog.Spec, runs int) error {
 		qs, _ := judgeProbeQuestions()
 		var lat []float64
 		for i := 0; i < runs; i++ {
-			reply, err := systemOne(ctx, url, key, modelrt.DecisionModel(spec), judgeProbeState, qs)
+			reply, err := openai.SystemOne(ctx, url, key, modelrt.DecisionModel(spec), judgeProbeState, qs)
 			if err != nil {
 				return err
 			}
@@ -270,7 +229,7 @@ func runJudge(ctx context.Context, spec *catalog.Spec, state string, asks []stri
 			printJudgeAnswers(parsed, nil)
 			return nil
 		}
-		reply, err := systemOne(ctx, url, key, modelrt.DecisionModel(spec), state, questions)
+		reply, err := openai.SystemOne(ctx, url, key, modelrt.DecisionModel(spec), state, questions)
 		if err != nil {
 			return err
 		}

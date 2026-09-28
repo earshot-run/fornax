@@ -50,7 +50,11 @@ func WithServer(ctx context.Context, spec *catalog.Spec, eng *catalog.EngineSpec
 		return err
 	}
 	logPath := filepath.Join(root, "server.log")
-	cmd, err := spawnServer(root, eng, spec, port, catalog.ContextWindow, logPath)
+	ctxSize, note := contextFor(root, spec, catalog.ContextWindow)
+	if note != "" {
+		fmt.Fprintln(os.Stderr, ui.Dim(note))
+	}
+	cmd, err := spawnServer(root, eng, spec, port, ctxSize, logPath, nil)
 	if err != nil {
 		return err
 	}

@@ -63,7 +63,7 @@ Workbench:
   search     GGUF repos on Hugging Face — no query lists the most downloaded
   version    Print the build version
   upgrade    Check for a newer fornax release
-  mcp        Serve MCP on stdio — agents call ask/see/hear/embed/imagine/animate/say/models
+  mcp        Serve MCP on stdio — agents call ask/see/hear/judge/rerank/embed/imagine/animate/say/models
   completion Shell completions: zsh, bash, fish
 
 Run "fornax <command> -h" for a command's flags.

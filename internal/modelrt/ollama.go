@@ -128,6 +128,15 @@ func ollamaBlobURL(ns, name, digest string) string {
 	return fmt.Sprintf("%s/%s/%s/blobs/%s", ollamaRegistry, ns, name, digest)
 }
 
+// The sha256 an OCI layer digest names ("sha256:<hex>" → "<hex>"), or "".
+func ociDigest(digest string) string {
+	hexPart, ok := strings.CutPrefix(digest, "sha256:")
+	if !ok || len(hexPart) != 64 {
+		return ""
+	}
+	return strings.ToLower(hexPart)
+}
+
 func deriveOllamaID(name, tag string) string {
 	id := "ollama-" + name
 	if tag != "latest" {
@@ -208,12 +217,14 @@ func ensureOllama(ctx context.Context, arg, as, kind string) (*customEntry, erro
 		File:     ollamaFileName(ns, name, tag),
 		Bytes:    modelLayer.Size,
 		URL:      ollamaBlobURL(ns, name, modelLayer.Digest),
+		SHA256:   ociDigest(modelLayer.Digest),
 	}
 	if projLayer != nil && kindName != "text" {
 		entry.MMProj = &customFile{
-			File:  "mmproj-" + entry.File,
-			Bytes: projLayer.Size,
-			URL:   ollamaBlobURL(ns, name, projLayer.Digest),
+			File:   "mmproj-" + entry.File,
+			Bytes:  projLayer.Size,
+			URL:    ollamaBlobURL(ns, name, projLayer.Digest),
+			SHA256: ociDigest(projLayer.Digest),
 		}
 	}
 	fetching.Stop("")

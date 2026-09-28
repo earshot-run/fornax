@@ -21,3 +21,7 @@ func MemoryBytes() int64 {
 	copy(buf[:], raw)
 	return int64(binary.LittleEndian.Uint64(buf[:]))
 }
+
+// Apple Silicon has one unified memory pool; there is no separate VRAM to
+// report, and the fit check uses total RAM.
+func VRAMBytes() int64 { return 0 }

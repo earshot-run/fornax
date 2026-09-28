@@ -7,6 +7,7 @@ package modelrt
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -49,6 +51,7 @@ type customEntry struct {
 	// Direct download URL for non-Hugging-Face sources (ollama registry
 	// blobs). Empty = built from repo/revision/file on huggingface.co.
 	URL    string      `json:"url,omitempty"`
+	SHA256 string      `json:"sha256,omitempty"`
 	MMProj *customFile `json:"mmproj,omitempty"`
 	// image and video only: files passed to sd-cli under their own flag,
 	// and the engine arguments the operator saved for this model.
@@ -58,16 +61,18 @@ type customEntry struct {
 }
 
 type customFile struct {
-	File  string `json:"file"`
-	Bytes int64  `json:"bytes"`
-	URL   string `json:"url,omitempty"`
+	File   string `json:"file"`
+	Bytes  int64  `json:"bytes"`
+	URL    string `json:"url,omitempty"`
+	SHA256 string `json:"sha256,omitempty"`
 }
 
 type customCompanion struct {
-	Flag  string `json:"flag"`
-	File  string `json:"file"`
-	Bytes int64  `json:"bytes"`
-	URL   string `json:"url"`
+	Flag   string `json:"flag"`
+	File   string `json:"file"`
+	Bytes  int64  `json:"bytes"`
+	URL    string `json:"url"`
+	SHA256 string `json:"sha256,omitempty"`
 }
 
 type customStore struct {
@@ -134,19 +139,22 @@ func (e *customEntry) spec() *catalog.Spec {
 			Revision: e.Revision,
 			Bytes:    e.Bytes,
 			URL:      e.URL,
+			SHA256:   e.SHA256,
 		},
 		Port: e.Port,
 	}
 	spec.Summary = fmt.Sprintf("custom — %s @ %.7s", e.Repo+"/"+e.File, e.Revision)
 	if e.MMProj != nil {
-		spec.MMProj = &catalog.Artifact{File: e.MMProj.File, Revision: e.Revision, Bytes: e.MMProj.Bytes, URL: e.MMProj.URL}
+		spec.MMProj = &catalog.Artifact{File: e.MMProj.File, Revision: e.Revision, Bytes: e.MMProj.Bytes, URL: e.MMProj.URL, SHA256: e.MMProj.SHA256}
 	}
 	if kind == catalog.Image || kind == catalog.Video {
 		spec.Runtime = catalog.SD
-		spec.Args = e.Args
 	}
+	// Saved engine arguments: sd-cli flags for image and video models,
+	// llama-server flags for everything else.
+	spec.Args = e.Args
 	for _, c := range e.Companions {
-		spec.Companions = append(spec.Companions, catalog.Artifact{Flag: c.Flag, File: c.File, Bytes: c.Bytes, URL: c.URL})
+		spec.Companions = append(spec.Companions, catalog.Artifact{Flag: c.Flag, File: c.File, Bytes: c.Bytes, URL: c.URL, SHA256: c.SHA256})
 	}
 	return spec
 }
@@ -290,6 +298,16 @@ var quantRank = []string{
 // Pick the one .gguf a repo-only pull should get. Projectors and other
 // non-weight ggufs are never the answer.
 func pickGGUFFile(repo string, files []string) (string, error) {
+	ranked, err := rankedGGUFFiles(repo, files)
+	if err != nil {
+		return "", err
+	}
+	return ranked[0], nil
+}
+
+// Every .gguf a repo-only pull could get, best quant first. Projectors and
+// other non-weight ggufs are never included.
+func rankedGGUFFiles(repo string, files []string) ([]string, error) {
 	var cands []string
 	for _, f := range files {
 		base := strings.ToLower(filepath.Base(f))
@@ -299,19 +317,47 @@ func pickGGUFFile(repo string, files []string) (string, error) {
 		cands = append(cands, f)
 	}
 	if len(cands) == 0 {
-		return "", fmt.Errorf("%s has no .gguf weights — check the files at huggingface.co/%s/tree/main", repo, repo)
+		return nil, fmt.Errorf("%s has no .gguf weights — check the files at huggingface.co/%s/tree/main", repo, repo)
 	}
+	var ranked []string
 	for _, quant := range quantRank {
 		for _, f := range cands {
-			if strings.Contains(strings.ToUpper(f), quant) {
-				return f, nil
+			if strings.Contains(strings.ToUpper(f), quant) && !slices.Contains(ranked, f) {
+				ranked = append(ranked, f)
 			}
 		}
 	}
-	if len(cands) == 1 {
-		return cands[0], nil
+	if len(ranked) == 0 {
+		if len(cands) == 1 {
+			return cands, nil
+		}
+		return nil, fmt.Errorf("%s has %d .gguf files fornax cannot rank — pick one: `fornax pull hf:%s/<file>`", repo, len(cands), repo)
 	}
-	return "", fmt.Errorf("%s has %d .gguf files fornax cannot rank — pick one: `fornax pull hf:%s/<file>`", repo, len(cands), repo)
+	return ranked, nil
+}
+
+// The best-ranked quant this machine can actually run: when a repo offers
+// several, the first whose size fits total RAM, else the best-ranked one.
+// Costs a HEAD per candidate, so only a repo-only pull uses it.
+func pickGGUFFileFitting(ctx context.Context, repo, revision string, files []string) (string, error) {
+	ranked, err := rankedGGUFFiles(repo, files)
+	if err != nil {
+		return "", err
+	}
+	ram := MemoryBytes()
+	if len(ranked) == 1 || ram == 0 {
+		return ranked[0], nil
+	}
+	for _, f := range ranked {
+		size, _, err := hfFileSize(ctx, repo, revision, f)
+		if err != nil {
+			break
+		}
+		if catalog.FitFor(size, ram) != catalog.Wont {
+			return f, nil
+		}
+	}
+	return ranked[0], nil
 }
 
 var splitPartPattern = regexp.MustCompile(`^(.+-)(\d{5})-of-(\d{5})\.gguf$`)
@@ -378,16 +424,17 @@ func inferKind(repo, file string, hasMMProj bool) string {
 	return "text"
 }
 
-// HEAD the resolve URL for a file's size: x-linked-size for LFS files,
-// the body's own length otherwise.
-func hfFileSize(ctx context.Context, repo, rev, file string) (int64, error) {
+// HEAD the resolve URL for a file's size and, when the source publishes one,
+// its sha256: x-linked-size and x-linked-etag for LFS files (the etag is the
+// LFS object's sha256), the body's own length otherwise.
+func hfFileSize(ctx context.Context, repo, rev, file string) (int64, string, error) {
 	url := fmt.Sprintf("%s/%s/resolve/%s/%s", HFHost, repo, rev, file)
 	req, err := hfRequest(ctx, http.MethodHead, url)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
-	// x-linked-size lives on huggingface.co's own response — following the
-	// CDN redirect would drop it.
+	// x-linked-size and x-linked-etag live on huggingface.co's own response —
+	// following the CDN redirect would drop them.
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
@@ -396,23 +443,37 @@ func hfFileSize(ctx context.Context, repo, rev, file string) (int64, error) {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("could not reach huggingface.co: %w", err)
+		return 0, "", fmt.Errorf("could not reach huggingface.co: %w", err)
 	}
 	defer resp.Body.Close()
 	io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return 0, gatedError(repo)
+		return 0, "", gatedError(repo)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
-		return 0, fmt.Errorf("huggingface.co answered HTTP %d for %s", resp.StatusCode, url)
+		return 0, "", fmt.Errorf("huggingface.co answered HTTP %d for %s", resp.StatusCode, url)
 	}
+	sha := lfsDigest(resp.Header.Get("x-linked-etag"))
 	if size, err := strconv.ParseInt(resp.Header.Get("x-linked-size"), 10, 64); err == nil && size > 0 {
-		return size, nil
+		return size, sha, nil
 	}
 	if resp.StatusCode < 300 && resp.ContentLength > 0 {
-		return resp.ContentLength, nil
+		return resp.ContentLength, sha, nil
 	}
-	return 0, fmt.Errorf("huggingface.co did not say how large %s is", file)
+	return 0, "", fmt.Errorf("huggingface.co did not say how large %s is", file)
+}
+
+// The sha256 in an x-linked-etag, or "" when it is not one (a small
+// non-LFS file answers with a plain etag, and some repos hash differently).
+func lfsDigest(etag string) string {
+	etag = strings.Trim(strings.TrimSpace(etag), `"`)
+	if len(etag) != 64 {
+		return ""
+	}
+	if _, err := hex.DecodeString(etag); err != nil {
+		return ""
+	}
+	return strings.ToLower(etag)
 }
 
 var idClean = regexp.MustCompile(`[^a-z0-9]+`)
@@ -444,7 +505,11 @@ func customID(root, as, derived string) (string, error) {
 
 // Record an installed custom model on a port nothing else claims.
 func saveCustom(root string, store *customStore, entry customEntry) error {
-	entry.Port = nextCustomPort(store)
+	port, err := nextCustomPort(store)
+	if err != nil {
+		return err
+	}
+	entry.Port = port
 	store.Models = append(store.Models, entry)
 	if err := saveCustoms(root, store); err != nil {
 		return fmt.Errorf("model installed but could not save %s: %w", CustomFile, err)
@@ -452,7 +517,9 @@ func saveCustom(root string, store *customStore, entry customEntry) error {
 	return nil
 }
 
-func nextCustomPort(store *customStore) int {
+// The first free custom port, or an error when the block is full — a model
+// with port 0 would bind a random port and never be findable again.
+func nextCustomPort(store *customStore) (int, error) {
 	used := map[int]bool{}
 	for _, spec := range catalog.Models() {
 		used[spec.Port] = true
@@ -462,10 +529,10 @@ func nextCustomPort(store *customStore) int {
 	}
 	for p := 7401; p < scratchPortBase; p++ {
 		if !used[p] {
-			return p
+			return p, nil
 		}
 	}
-	return 0
+	return 0, fmt.Errorf("all custom model ports (%d–%d) are taken — `fornax rm` one first", 7401, scratchPortBase-1)
 }
 
 // A ref is the same model spelled the way the user typed it — `hf:Org/Repo`,
@@ -505,8 +572,9 @@ func findCustom(store *customStore, ref, repo, rev, file string) *customEntry {
 // own sd-cli flag: Flag "vae", Ref "hf:Org/Repo/ae.safetensors".
 type Companion struct{ Flag, Ref string }
 
-// What `pull hf:…` can say beyond the ref itself. With and Args belong to
-// image and video models only.
+// What `pull hf:…` can say beyond the ref itself. With belongs to image and
+// video models; Args is saved engine arguments for any model — sd-cli flags
+// for image and video, llama-server flags otherwise.
 type HFOptions struct {
 	As, Kind, MMProj, Rev string
 	With                  []Companion
@@ -542,8 +610,8 @@ func ensureHF(ctx context.Context, arg, as, kind, mmproj, revFlag string, with [
 	default:
 		return nil, fmt.Errorf("--kind must be text, vision, audio, image, video, embed, rerank or speech")
 	}
-	if !diffusion && (len(with) > 0 || len(sdArgs) > 0) {
-		return nil, fmt.Errorf("--with and --args belong to --kind image or video")
+	if !diffusion && len(with) > 0 {
+		return nil, fmt.Errorf("--with names files sd-cli loads, so it belongs to --kind image or video; --args works for any model")
 	}
 	if existing := findCustom(store, canonicalHFRef(repo, revision, file), repo, revision, file); existing != nil {
 		return existing, nil
@@ -557,7 +625,7 @@ func ensureHF(ctx context.Context, arg, as, kind, mmproj, revFlag string, with [
 		}
 	}
 	if file == "" {
-		if file, err = pickGGUFFile(repo, files); err != nil {
+		if file, err = pickGGUFFileFitting(ctx, repo, revision, files); err != nil {
 			fetching.Stop("")
 			return nil, err
 		}
@@ -573,7 +641,7 @@ func ensureHF(ctx context.Context, arg, as, kind, mmproj, revFlag string, with [
 		fetching.Stop("")
 		return nil, fmt.Errorf("--kind %s needs a projector — %s has no mmproj-*.gguf; pass --mmproj <file>", kind, repo)
 	}
-	size, err := hfFileSize(ctx, repo, revision, file)
+	size, sha, err := hfFileSize(ctx, repo, revision, file)
 	if err != nil {
 		fetching.Stop("")
 		return nil, err
@@ -592,25 +660,25 @@ func ensureHF(ctx context.Context, arg, as, kind, mmproj, revFlag string, with [
 	}
 	entry := &customEntry{
 		ID: id, Kind: kind, Repo: repo, Revision: revision,
-		File: file, Bytes: size,
+		File: file, Bytes: size, SHA256: sha,
 		Ref: canonicalHFRef(repo, revision, file), Want: revision,
 	}
 	if mmproj != "" {
-		projSize, err := hfFileSize(ctx, repo, revision, mmproj)
+		projSize, projSHA, err := hfFileSize(ctx, repo, revision, mmproj)
 		if err != nil {
 			fetching.Stop("")
 			return nil, err
 		}
-		entry.MMProj = &customFile{File: mmproj, Bytes: projSize}
+		entry.MMProj = &customFile{File: mmproj, Bytes: projSize, SHA256: projSHA}
 	}
 	for _, part := range splitCompanions(files, file) {
-		partSize, err := hfFileSize(ctx, repo, revision, part)
+		partSize, partSHA, err := hfFileSize(ctx, repo, revision, part)
 		if err != nil {
 			fetching.Stop("")
 			return nil, err
 		}
 		entry.Companions = append(entry.Companions, customCompanion{
-			File: part, Bytes: partSize,
+			File: part, Bytes: partSize, SHA256: partSHA,
 			URL: fmt.Sprintf("https://huggingface.co/%s/resolve/%s/%s", repo, revision, part),
 		})
 	}
@@ -620,13 +688,13 @@ func ensureHF(ctx context.Context, arg, as, kind, mmproj, revFlag string, with [
 			fetching.Stop("")
 			return nil, err
 		}
-		cSize, err := hfFileSize(ctx, cRepo, cRev, cFile)
+		cSize, cSHA, err := hfFileSize(ctx, cRepo, cRev, cFile)
 		if err != nil {
 			fetching.Stop("")
 			return nil, err
 		}
 		entry.Companions = append(entry.Companions, customCompanion{
-			Flag: companion.Flag, File: filepath.Base(cFile), Bytes: cSize,
+			Flag: companion.Flag, File: filepath.Base(cFile), Bytes: cSize, SHA256: cSHA,
 			URL: fmt.Sprintf("https://huggingface.co/%s/resolve/%s/%s", cRepo, cRev, cFile),
 		})
 	}

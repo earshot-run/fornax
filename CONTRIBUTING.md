@@ -104,10 +104,13 @@ reach it only through its exported API.
 | `sdserver.go` | `StartSD`: a warm `sd-server` and its native async job API |
 | `tts.go` | `llama-tts`: `PrepareSpeech`, `RunSay`, `TTSCommand` |
 | `backend.go` | which engine build (cpu/metal/vulkan/cuda) this machine runs |
+| `fit.go` | the fit check and the memory budget it compares against (VRAM when there is a separate pool) |
+| `context.go` | the model's trained context window, read from its GGUF header |
+| `refresh.go` | `upgrade -engine` — reinstalling the installed engine builds |
 | `earshot.go` | handing a running server to Earshot, or the block to paste |
 | `idle.go` | `run -idle` over llama-server's `/metrics` counters |
 | `clean.go` | `Clean` — interrupted downloads and stale staging |
-| `memory_*.go` | total RAM, per OS |
+| `memory_*.go`, `vram_nvidia.go` | total RAM (and NVIDIA VRAM) per OS |
 
 ### `internal/studio` and `internal/mcp`
 

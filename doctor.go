@@ -25,7 +25,11 @@ func cmdDoctor(args []string) error {
 	row(" ", "home", root)
 	row(" ", "machine", fmt.Sprintf("%s %s · %s RAM", runtime.GOOS, runtime.GOARCH, ui.HumanSize(modelrt.MemoryBytes())))
 	probe := modelrt.ProbeGPU()
-	row(" ", "gpu", modelrt.DescribeGPU(probe))
+	gpu := modelrt.DescribeGPU(probe)
+	if vram := modelrt.VRAMBytes(); vram > 0 {
+		gpu += fmt.Sprintf(" · %s VRAM", ui.HumanSize(vram))
+	}
+	row(" ", "gpu", gpu)
 	if eng, err := modelrt.LlamaEngine(); err == nil {
 		label := "llama.cpp · " + string(eng.Backend)
 		if release := paths.EngineRelease(root, eng); release != "" {

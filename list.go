@@ -15,14 +15,14 @@ import (
 	"github.com/earshot-run/fornax/internal/ui"
 )
 
-func fitLabel(spec *catalog.Spec, memory int64) (string, func(string) string) {
+func fitLabel(spec *catalog.Spec) (string, func(string) string) {
 	if spec.Runtime == catalog.Apple {
 		if modelrt.AppleSupported() == nil {
 			return "fits", ui.Green
 		}
 		return "needs macOS 26+", ui.Red
 	}
-	switch catalog.FitFor(spec.SizeBytes(), memory) {
+	switch modelrt.Fit(spec.SizeBytes()) {
 	case catalog.Fits:
 		return "fits", ui.Green
 	case catalog.Tight:
@@ -91,7 +91,7 @@ func cmdList(args []string) error {
 		probes.Wait()
 		enc := json.NewEncoder(os.Stdout)
 		for i, spec := range specs {
-			fit, _ := fitLabel(spec, memory)
+			fit, _ := fitLabel(spec)
 			enc.Encode(struct {
 				ID        string `json:"id"`
 				Name      string `json:"name"`
@@ -142,7 +142,7 @@ func cmdList(args []string) error {
 		default:
 			status = ui.MarkIdle()
 		}
-		fit, fitStyle := fitLabel(spec, memory)
+		fit, fitStyle := fitLabel(spec)
 		size := ui.HumanSize(spec.SizeBytes())
 		if spec.Runtime == catalog.Apple {
 			size = "os"

@@ -122,6 +122,10 @@ func Pull(ctx context.Context, spec *catalog.Spec, eng *catalog.EngineSpec) erro
 		fmt.Fprintf(os.Stderr, "%s %s ready — the model itself ships in macOS\n", ui.Green("✓"), ui.Bold(spec.ID))
 		return nil
 	}
+	if size := spec.TotalBytes(); size > 0 && Fit(size) == catalog.Wont {
+		fmt.Fprintf(os.Stderr, "%s %s\n", ui.Yellow("warning:"),
+			fmt.Sprintf("%s needs about %s and this machine has %s — it may not run", spec.ID, ui.HumanSize(size), ui.HumanSize(FitBudget())))
+	}
 	bar := ui.NewProgress(spec.ID, spec.TotalBytes())
 	if err := ensureModel(ctx, root, spec, bar.Set); err != nil {
 		return err

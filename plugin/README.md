@@ -11,6 +11,8 @@ Give every agent Earshot runs, not only the Earshot agent, the models fornax run
 | `say` | Speaks text to a WAV file, optionally in a voice cloned from a reference take. |
 | `embed` | Turns text into an embedding vector. |
 | `ask` | Sends one prompt to a local text or vision model. |
+| `judge` | Asks a decision model (kev, laya) typed questions about a document — yes/no, one of a set, or a level — and gets calibrated probabilities. |
+| `rerank` | Scores documents against a query with a rerank model, best first. |
 | `models` | Lists every model and whether it's installed. |
 
 `imagine`, `animate` and `say` ask you before they run. Set any tool to Allow, Ask or Off in the plugin's **Tools** list.

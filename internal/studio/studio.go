@@ -401,7 +401,6 @@ func modelLabel(spec *catalog.Spec) string {
 // Every installed model, whatever it does; each page picks its own kind.
 func (s *studio) handleModels(w http.ResponseWriter, _ *http.Request) {
 	models := []studioModel{}
-	memory := modelrt.MemoryBytes()
 	for _, spec := range modelrt.AllSpecs(s.root) {
 		if !modelrt.Installed(s.root, spec) {
 			continue
@@ -409,7 +408,7 @@ func (s *studio) handleModels(w http.ResponseWriter, _ *http.Request) {
 		models = append(models, studioModel{
 			ID: spec.ID, Name: modelLabel(spec), Repo: spec.Repo, Kind: spec.Kind.String(), Runtime: spec.Runtime.String(),
 			Params: spec.Params, Quant: spec.Quant(),
-			Bytes: spec.TotalBytes(), Fit: catalog.FitFor(spec.TotalBytes(), memory).String(), Steps: savedSteps(spec.Args),
+			Bytes: spec.TotalBytes(), Fit: modelrt.Fit(spec.TotalBytes()).String(), Steps: savedSteps(spec.Args),
 			Chat: modelrt.RequireChat(spec) == nil && spec.Kind != catalog.Decision,
 		})
 	}

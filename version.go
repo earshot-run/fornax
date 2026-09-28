@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/earshot-run/fornax/internal/modelrt"
 	"github.com/earshot-run/fornax/internal/openai"
 	"github.com/earshot-run/fornax/internal/ui"
 )
@@ -55,10 +56,18 @@ type ghRelease struct {
 func cmdUpgrade(ctx context.Context, args []string) error {
 	set := flag.NewFlagSet("upgrade", flag.ExitOnError)
 	check := set.Bool("check", false, "report only — do not download or install")
-	set.Usage = ui.UsageFunc(set, "usage: fornax upgrade [-check]")
+	engine := set.Bool("engine", false, "refresh the installed engine builds (llama.cpp, stable-diffusion.cpp) instead of the binary")
+	set.Usage = ui.UsageFunc(set, "usage: fornax upgrade [-check] [-engine]")
 	set.Parse(args)
 	if set.NArg() != 0 {
-		return fmt.Errorf("usage: fornax upgrade [-check]")
+		return fmt.Errorf("usage: fornax upgrade [-check] [-engine]")
+	}
+	if *engine {
+		lines, err := modelrt.RefreshEngines(ctx)
+		for _, line := range lines {
+			fmt.Printf("%s %s\n", ui.Green("✓"), line)
+		}
+		return err
 	}
 	if version == "dev" {
 		fmt.Println("dev build — rerun go install github.com/earshot-run/fornax@main to update")

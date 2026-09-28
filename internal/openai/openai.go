@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -75,7 +76,7 @@ func OnceFull(ctx context.Context, url, key, model string, messages []Message, m
 		Choices []struct {
 			Message struct {
 				Content string `json:"content"`
-			} `json:"Message"`
+			} `json:"message"`
 		} `json:"choices"`
 		Usage   *Usage         `json:"usage"`
 		Timings map[string]any `json:"timings"`
@@ -128,7 +129,7 @@ func Stream(ctx context.Context, url, key, model string, messages []Message, max
 				} `json:"delta"`
 			} `json:"choices"`
 			Error *struct {
-				Message string `json:"Message"`
+				Message string `json:"message"`
 			} `json:"error"`
 		}
 		if json.Unmarshal([]byte(data), &chunk) != nil {
@@ -172,7 +173,7 @@ func Error(resp *http.Response) error {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	var parsed struct {
 		Error struct {
-			Message string `json:"Message"`
+			Message string `json:"message"`
 		} `json:"error"`
 	}
 	if json.Unmarshal(body, &parsed) == nil && parsed.Error.Message != "" {
@@ -289,4 +290,107 @@ func GetJSON(client *http.Client, url, key string) map[string]any {
 		return nil
 	}
 	return value
+}
+
+// A typed question for a decision model's /v1/systemone endpoint (TypeSafe's
+// System One API): a yes/no (noul), one of a set (choice), or a level on an
+// ordered scale (score).
+type TypedQuestion struct {
+	Kind         string
+	Instructions string
+	Options      []string
+}
+
+func (q *TypedQuestion) wire() map[string]any {
+	body := map[string]any{"type": q.Kind, "instructions": q.Instructions}
+	switch q.Kind {
+	case "choice":
+		criteria := map[string]any{}
+		for _, opt := range q.Options {
+			criteria[opt] = opt
+		}
+		body["criteria"] = criteria
+	case "score":
+		body["criteria"] = q.Options
+	}
+	return body
+}
+
+// SystemOne asks a decision model typed questions about a piece of state and
+// returns the raw reply: answers, probabilities, legend and latency_ms.
+func SystemOne(ctx context.Context, url, key, model, state string, questions map[string]*TypedQuestion) (map[string]any, error) {
+	qs := map[string]any{}
+	for id, q := range questions {
+		qs[id] = q.wire()
+	}
+	body, _ := json.Marshal(map[string]any{"model": model, "state": state, "questions": qs})
+	resp, err := Post(ctx, url+"/systemone", key, body)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, Error(resp)
+	}
+	var parsed map[string]any
+	if err := json.NewDecoder(io.LimitReader(resp.Body, MaxBody)).Decode(&parsed); err != nil {
+		return nil, fmt.Errorf("the reply was not readable: %w", err)
+	}
+	return parsed, nil
+}
+
+// One scored document, in the server's input indexing.
+type RerankHit struct {
+	Index int
+	Score float64
+	Text  string
+}
+
+// Rerank scores docs against a query over /v1/rerank, best first. The server
+// reports only an index and score unless return_text is set, so the row text
+// falls back to the input doc by index.
+func Rerank(ctx context.Context, url, key, model, query string, docs []string, topN int) ([]RerankHit, error) {
+	req := map[string]any{"model": model, "query": query, "documents": docs}
+	if topN > 0 {
+		req["top_n"] = topN
+	}
+	body, _ := json.Marshal(req)
+	resp, err := Post(ctx, url+"/rerank", key, body)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, Error(resp)
+	}
+	var parsed struct {
+		Results []struct {
+			Index          int     `json:"index"`
+			RelevanceScore float64 `json:"relevance_score"`
+			Document       *struct {
+				Text string `json:"text"`
+			} `json:"document"`
+		} `json:"results"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, MaxBody)).Decode(&parsed); err != nil {
+		return nil, fmt.Errorf("the reply was not readable: %w", err)
+	}
+	if len(parsed.Results) == 0 {
+		return nil, fmt.Errorf("the server returned no rankings")
+	}
+	hits := make([]RerankHit, 0, len(parsed.Results))
+	for _, r := range parsed.Results {
+		hit := RerankHit{Index: r.Index, Score: r.RelevanceScore}
+		if r.Document != nil && r.Document.Text != "" {
+			hit.Text = r.Document.Text
+		} else {
+			if r.Index < 0 || r.Index >= len(docs) {
+				return nil, fmt.Errorf("the server returned a result index out of range")
+			}
+			hit.Text = docs[r.Index]
+		}
+		hits = append(hits, hit)
+	}
+	sort.Slice(hits, func(i, j int) bool { return hits[i].Score > hits[j].Score })
+	return hits, nil
 }

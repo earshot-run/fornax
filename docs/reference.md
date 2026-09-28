@@ -11,7 +11,7 @@ what agents should read.
 | Command | What it does |
 | --- | --- |
 | `fornax list` | Your models: sizes, modality, fit on this machine, what is installed |
-| `fornax pull <model>` | Download a model; resumes interrupted downloads. A saved id, `hf:Org/Repo[/File.gguf]` (or `Org/Repo`), or `ollama:<name>[:<tag>]` — flags: `--as`, `--kind`, `--mmproj`, `--rev` |
+| `fornax pull <model>` | Download a model; resumes interrupted downloads. A saved id, `hf:Org/Repo[/File.gguf]` (or `Org/Repo`), or `ollama:<name>[:<tag>]` — flags: `--as`, `--kind`, `--mmproj`, `--rev`, `--args` (engine flags saved with the model: llama-server for chat/vision/etc., sd-cli for image/video) |
 | `fornax rm <model>…` | Delete a model's files and any partial download; several ids at once, `-all` for every model on disk |
 | `fornax clean` | Remove interrupted downloads, stale staging and old server logs (`-all` wipes everything) |
 | `fornax doctor` | What this machine can run; engine, keys and Earshot status |
@@ -41,7 +41,7 @@ what agents should read.
 
 | Command | What it does |
 | --- | --- |
-| `fornax run <model>` | Serve on loopback, register with Earshot; Ctrl-C stops. `-idle 20m` stops an unused server; `--events` emits one JSON line per stage for supervisors |
+| `fornax run <model>` | Serve on loopback, register with Earshot; Ctrl-C stops. `-idle 20m` stops an unused server; `--events` emits one JSON line per stage for supervisors; flags after `--` go to llama-server unchanged (`run m -- --flash-attn`) |
 | `fornax ps` | Which models are serving right now |
 | `fornax connect <model>` | Register an already-running model's server with Earshot |
 
@@ -51,8 +51,8 @@ what agents should read.
 | --- | --- |
 | `fornax show <model>` | Model card + a look inside the artifact — GGUF metadata (arch, params, quant, context), safetensors header, kev checkpoint |
 | `fornax search [query]` | GGUF repos on Hugging Face ranked by downloads. No query lists the most-downloaded; a query ranks matches. Single-file repos print the ready `pull hf:` command |
-| `fornax mcp` | MCP server on stdio — agents call ask/see/hear/embed/imagine/animate/say/models as tools. `FORNAX_OUT_DIR` holds made files that have no absolute `out` |
-| `fornax version` / `upgrade` | Build stamp; check for a newer release |
+| `fornax mcp` | MCP server on stdio — agents call ask/see/hear/judge/rerank/embed/imagine/animate/say/models as tools. `FORNAX_OUT_DIR` holds made files that have no absolute `out` |
+| `fornax version` / `upgrade` | Build stamp; check for a newer release. `upgrade -engine` reinstalls the installed engine builds (llama.cpp, stable-diffusion.cpp) from the newest upstream release |
 | `fornax completion <zsh\|bash\|fish>` | Shell completion script on stdout |
 
 `fornax list --local` shows only installed models; `--json` prints one JSON
@@ -95,7 +95,10 @@ go install github.com/earshot-run/fornax@main
 
 `fornax upgrade` self-updates in place: `main` builds follow the latest
 successful `main` build, and tagged versions keep following stable releases.
-`-check` only reports. The installer uses `gh` when it's authenticated,
+`-check` only reports. `upgrade -engine` instead replaces the installed
+llama.cpp and stable-diffusion.cpp builds with the newest upstream release
+that carries them — engines are otherwise used until removed. The installer
+uses `gh` when it's authenticated,
 or downloads the public release with curl otherwise. Shell completions:
 `fornax completion zsh|bash|fish`.
 
@@ -147,7 +150,11 @@ laya build from their repos' HEAD; a model downloads from the revision its
 ref names, `main` when it names none. What is installed stays until you
 remove it (`fornax clean`, `rm`), so a later install may get newer upstream
 bits. Downloads resume through `.part` files and take their size from the
-server; there is no hash check.
+server. Weights and projectors from Hugging Face are checked against the
+sha256 Hugging Face publishes for them (the LFS etag) once they land, and an
+Ollama layer against its OCI blob digest; a mismatch is deleted and the pull
+fails. Engine builds and GitHub release assets publish no digest and are not
+checked.
 Model servers start with a scrubbed environment, bind loopback only, and
 require a generated API key (`~/.fornax/server.key`, mode 600).
 
@@ -204,7 +211,8 @@ to its own `engine/` directory, so switching never reuses the wrong one.
 
 `fornax pull hf:Org/Repo` — or just `run`/`ask` the same ref — resolves the
 repo's file list and picks a quant (Q4_K_M, then Q5_K_M, Q6_K, Q4_K_XL,
-Q8_0…). Name the file to be exact: `hf:Org/Repo/Model-Q8_0.gguf`. Split
+Q8_0…), preferring one that fits this machine's memory when the repo offers a
+choice. Name the file to be exact: `hf:Org/Repo/Model-Q8_0.gguf`. Split
 archives (`-00001-of-0000N`) pull every part; a repo `mmproj-*.gguf`
 projector attaches itself for vision, audio and speech models; the kind is
 inferred from the name (`rerank`, `embed`, `tts`, `vl`, `asr`…) and `--kind`

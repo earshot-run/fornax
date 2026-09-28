@@ -92,6 +92,10 @@ type Artifact struct {
 	Bytes int64
 	// Non-Hugging-Face sources set this directly (kev release tarballs).
 	URL string
+	// The sha256 the source publishes for these bytes (Hugging Face's LFS
+	// etag, an OCI blob digest), checked after download. Empty when the
+	// source publishes none.
+	SHA256 string
 }
 
 type Spec struct {

@@ -91,7 +91,7 @@ func cmdPullHF(ctx context.Context, args []string) error {
 	kind := set.String("kind", "", "text | vision | audio | image | video | embed | rerank | speech (default: infer)")
 	var with companionFlags
 	set.Var(&with, "with", "image/video: a file sd-cli loads beside the weights, as <sd-cli flag>=hf:Org/Repo/File (repeatable)")
-	sdArgs := set.String("args", "", "image/video: sd-cli arguments saved with the model")
+	sdArgs := set.String("args", "", "engine arguments saved with the model — llama-server flags, or sd-cli flags for image/video")
 	mmproj := set.String("mmproj", "", "projector file in the same repo (default: auto-detect for vision/audio/speech)")
 	rev := set.String("rev", "", "branch, tag or commit (default: main)")
 	asEvents := set.Bool("events", false, "one JSON event per line on stdout")

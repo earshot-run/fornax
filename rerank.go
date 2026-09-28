@@ -3,18 +3,15 @@ package main
 // Reranking — a llama-served model that speaks /v1/rerank (Jina-compatible)
 // instead of chat completions. `fornax rerank` prints "score  doc" rows on
 // stdout so scripts can pipe them; the doc text always comes from the input
-// since llama-server omits document.text unless asked.
+// since llama-server omits document.text unless asked. The wire client lives
+// in openai, shared with the MCP server.
 
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
-	"sort"
 	"strings"
 
 	"github.com/earshot-run/fornax/internal/catalog"
@@ -22,13 +19,6 @@ import (
 	"github.com/earshot-run/fornax/internal/openai"
 	"github.com/earshot-run/fornax/internal/ui"
 )
-
-// One scored document, in the server's input indexing.
-type rerankHit struct {
-	index int
-	score float64
-	text  string
-}
 
 // `fornax rerank <model> "query" <doc…>` — or docs piped on stdin, one per
 // line.
@@ -65,69 +55,16 @@ func cmdRerank(ctx context.Context, args []string) error {
 		return fmt.Errorf("%s does not rerank — pick a rerank model (`list`)", spec.ID)
 	}
 	return modelrt.WithServer(ctx, spec, eng, func(url, key string) error {
-		hits, err := rerankOnce(ctx, url, key, spec.ID, query, docs, *top)
+		hits, err := openai.Rerank(ctx, url, key, spec.ID, query, docs, *top)
 		if err != nil {
 			return err
 		}
 		for _, hit := range hits {
-			fmt.Printf("%.3f  %s\n", hit.score, shortDoc(hit.text))
+			fmt.Printf("%.3f  %s\n", hit.Score, shortDoc(hit.Text))
 		}
-		fmt.Fprintf(os.Stderr, "%s\n", ui.Dim(fmt.Sprintf("%d docs, best match #%d", len(docs), hits[0].index+1)))
+		fmt.Fprintf(os.Stderr, "%s\n", ui.Dim(fmt.Sprintf("%d docs, best match #%d", len(docs), hits[0].Index+1)))
 		return nil
 	})
-}
-
-// One rerank call against POST /v1/rerank; hits come back sorted by score,
-// best first. The server reports only an index + score unless return_text is
-// set, so the row text falls back to the input doc by index.
-func rerankOnce(ctx context.Context, url, key, model, query string, docs []string, topN int) ([]rerankHit, error) {
-	req := map[string]any{
-		"model":     model,
-		"query":     query,
-		"documents": docs,
-	}
-	if topN > 0 {
-		req["top_n"] = topN
-	}
-	body, _ := json.Marshal(req)
-	resp, err := openai.Post(ctx, url+"/rerank", key, body)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, openai.Error(resp)
-	}
-	var parsed struct {
-		Results []struct {
-			Index          int     `json:"index"`
-			RelevanceScore float64 `json:"relevance_score"`
-			Document       *struct {
-				Text string `json:"text"`
-			} `json:"document"`
-		} `json:"results"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, openai.MaxBody)).Decode(&parsed); err != nil {
-		return nil, fmt.Errorf("the reply was not readable: %w", err)
-	}
-	if len(parsed.Results) == 0 {
-		return nil, fmt.Errorf("the server returned no rankings")
-	}
-	hits := make([]rerankHit, 0, len(parsed.Results))
-	for _, r := range parsed.Results {
-		hit := rerankHit{index: r.Index, score: r.RelevanceScore}
-		if r.Document != nil && r.Document.Text != "" {
-			hit.text = r.Document.Text
-		} else {
-			if r.Index < 0 || r.Index >= len(docs) {
-				return nil, fmt.Errorf("the server returned a result index out of range")
-			}
-			hit.text = docs[r.Index]
-		}
-		hits = append(hits, hit)
-	}
-	sort.Slice(hits, func(i, j int) bool { return hits[i].score > hits[j].score })
-	return hits, nil
 }
 
 // One display line's worth of a doc: whitespace collapsed, ~80 chars max.
@@ -143,13 +80,13 @@ func shortDoc(doc string) string {
 // A rerank model's `test` scores two unrelated docs — the cat should win.
 func runRerankTest(ctx context.Context, spec *catalog.Spec, eng *catalog.EngineSpec) error {
 	return modelrt.WithServer(ctx, spec, eng, func(url, key string) error {
-		hits, err := rerankOnce(ctx, url, key, spec.ID,
+		hits, err := openai.Rerank(ctx, url, key, spec.ID,
 			"what did the cat do",
 			[]string{"the cat sat", "quantum physics"}, 0)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("%s %s — best match scored %.2f\n", ui.Green("✓"), ui.Bold(spec.ID), hits[0].score)
+		fmt.Printf("%s %s — best match scored %.2f\n", ui.Green("✓"), ui.Bold(spec.ID), hits[0].Score)
 		return nil
 	})
 }

@@ -27,7 +27,11 @@ import (
 )
 
 const (
-	ConfigFile = "Config.json"
+	ConfigFile = "config.json"
+	// Builds before 2026-09 wrote the file with a capital C, which macOS's
+	// case-insensitive filesystem hid but Linux did not. Read it when the
+	// lowercase name is absent so a moved ~/.fornax keeps its key.
+	legacyConfigFile = "Config.json"
 	// Written last into an engine or runtime dir: what was installed.
 	Receipt = "installed"
 	KeyFile = "server.key"
@@ -253,7 +257,10 @@ func IsHFHost(host string) bool {
 func LoadConfig(root string) (*Config, error) {
 	data, err := os.ReadFile(filepath.Join(root, ConfigFile))
 	if errors.Is(err, fs.ErrNotExist) {
-		return &Config{Version: 1}, nil
+		// A legacy capital-C file, on a case-sensitive filesystem.
+		if data, err = os.ReadFile(filepath.Join(root, legacyConfigFile)); errors.Is(err, fs.ErrNotExist) {
+			return &Config{Version: 1}, nil
+		}
 	}
 	if err != nil {
 		return nil, fmt.Errorf("could not read fornax settings: %w", err)

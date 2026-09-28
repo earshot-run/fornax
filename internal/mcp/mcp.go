@@ -1,6 +1,7 @@
 // Package mcp is `fornax mcp` — a newline-delimited JSON-RPC 2.0 MCP server
 // on stdin/stdout, so MCP-aware agents (Claude Code, Cursor) can drive the
-// local models. stdout carries only protocol replies: every spinner,
+// local models: ask, see, hear, judge, rerank, embed, imagine, animate, say
+// and list. stdout carries only protocol replies: every spinner,
 // progress bar and engine line stays on stderr, and the two foreground
 // helpers that would print a success line (modelrt.RunSay, RunSD) get
 // os.Stdout redirected while they run. Requests run one at a time — a model
@@ -28,7 +29,7 @@ import (
 
 // The MCP revision this server speaks; serverInfo.version is the build stamp
 // the caller passes to Run.
-const mcpProtocol = "2024-11-05"
+const mcpProtocol = "2025-06-18"
 
 type mcpRequest struct {
 	ID     json.RawMessage `json:"id"`
@@ -180,6 +181,10 @@ func mcpRunTool(ctx context.Context, name string, args json.RawMessage) (string,
 		return mcpAnimate(ctx, args)
 	case "say":
 		return mcpSay(ctx, args)
+	case "judge":
+		return mcpJudge(ctx, args)
+	case "rerank":
+		return mcpRerank(ctx, args)
 	case "models":
 		return mcpList()
 	}
@@ -492,6 +497,113 @@ func mcpSay(ctx context.Context, args json.RawMessage) (string, error) {
 	return "wrote " + in.Out, nil
 }
 
+// Typed questions to a decision model, answered with calibrated
+// probabilities — the same /v1/systemone the `judge` command speaks. The
+// reply is returned as JSON (answers, probabilities, legend, latency_ms).
+func mcpJudge(ctx context.Context, args json.RawMessage) (string, error) {
+	var in struct {
+		State string `json:"state"`
+		Ask   []struct {
+			ID           string   `json:"id"`
+			Type         string   `json:"type"`
+			Instructions string   `json:"instructions"`
+			Options      []string `json:"options"`
+		} `json:"ask"`
+		Model string `json:"model"`
+	}
+	if err := mcpArgs(args, &in); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(in.State) == "" {
+		return "", fmt.Errorf("judge wants state — the document to ask about")
+	}
+	if len(in.Ask) == 0 {
+		return "", fmt.Errorf("judge wants at least one ask")
+	}
+	questions := map[string]*openai.TypedQuestion{}
+	for _, a := range in.Ask {
+		if a.ID == "" {
+			return "", fmt.Errorf("every ask needs an id")
+		}
+		switch a.Type {
+		case "noul":
+			if len(a.Options) > 0 {
+				return "", fmt.Errorf("ask %s: noul takes no options", a.ID)
+			}
+		case "choice", "score":
+			if len(a.Options) < 2 {
+				return "", fmt.Errorf("ask %s: %s needs at least two options", a.ID, a.Type)
+			}
+		default:
+			return "", fmt.Errorf("ask %s: type must be noul, choice or score", a.ID)
+		}
+		questions[a.ID] = &openai.TypedQuestion{Kind: a.Type, Instructions: a.Instructions, Options: a.Options}
+	}
+	spec, _, err := mcpResolve(ctx, in.Model, catalog.Decision)
+	if err != nil {
+		return "", err
+	}
+	if spec.Kind != catalog.Decision {
+		return "", fmt.Errorf("%s chats, it does not judge — pull a kev or laya model", spec.ID)
+	}
+	var reply map[string]any
+	err = modelrt.WithServer(ctx, spec, nil, func(url, key string) error {
+		r, err := openai.SystemOne(ctx, url, key, modelrt.DecisionModel(spec), in.State, questions)
+		if err != nil {
+			return err
+		}
+		reply = r
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	out, _ := json.Marshal(reply)
+	return string(out), nil
+}
+
+// Score documents against a query with a rerank model; one "score<TAB>doc"
+// line per result, best first.
+func mcpRerank(ctx context.Context, args json.RawMessage) (string, error) {
+	var in struct {
+		Query     string   `json:"query"`
+		Documents []string `json:"documents"`
+		TopN      int      `json:"top_n"`
+		Model     string   `json:"model"`
+	}
+	if err := mcpArgs(args, &in); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(in.Query) == "" {
+		return "", fmt.Errorf("rerank wants a query")
+	}
+	if len(in.Documents) == 0 {
+		return "", fmt.Errorf("rerank wants documents")
+	}
+	spec, eng, err := mcpResolve(ctx, in.Model, catalog.Rerank)
+	if err != nil {
+		return "", err
+	}
+	if spec.Kind != catalog.Rerank {
+		return "", fmt.Errorf("%s does not rerank — pull a rerank model", spec.ID)
+	}
+	var lines strings.Builder
+	err = modelrt.WithServer(ctx, spec, eng, func(url, key string) error {
+		hits, err := openai.Rerank(ctx, url, key, spec.ID, in.Query, in.Documents, in.TopN)
+		if err != nil {
+			return err
+		}
+		for _, hit := range hits {
+			fmt.Fprintf(&lines, "%.4f\t%s\n", hit.Score, hit.Text)
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return lines.String(), nil
+}
+
 // outPath names a generated file. FORNAX_OUT_DIR, when set, holds the default
 // name and any relative out, because a client may start this server in a
 // folder it later replaces, like a plugin's install directory.
@@ -600,6 +712,34 @@ func mcpTools() []any {
 				"voice": str("reference audio file to clone the voice from"),
 				"model": modelParam("speech"),
 			}, []string{"text"}),
+		},
+		map[string]any{
+			"name":        "judge",
+			"description": "Ask a local decision model (kev, laya) typed questions about a document and get calibrated probabilities — yes/no (noul), one of a set (choice), or a level on a scale (score). Returns JSON.",
+			"inputSchema": obj(map[string]any{
+				"state": str("the document the questions judge"),
+				"ask": map[string]any{
+					"type":        "array",
+					"description": "the typed questions to ask",
+					"items": obj(map[string]any{
+						"id":           str("a short key this answer comes back under"),
+						"type":         str("noul (yes/no), choice (one of a set) or score (a level on a scale)"),
+						"instructions": str("what the question asks"),
+						"options":      map[string]any{"type": "array", "items": str("an option label"), "description": "choice and score only, two or more, low to high for score"},
+					}, []string{"id", "type", "instructions"}),
+				},
+				"model": modelParam("decision"),
+			}, []string{"state", "ask"}),
+		},
+		map[string]any{
+			"name":        "rerank",
+			"description": "Score documents against a query with a local rerank model, best first. Returns one \"score<TAB>doc\" line per result.",
+			"inputSchema": obj(map[string]any{
+				"query":     str("what to rank the documents against"),
+				"documents": map[string]any{"type": "array", "items": str("a document"), "description": "the documents to score"},
+				"top_n":     map[string]any{"type": "integer", "description": "keep only the top N (default: all)"},
+				"model":     modelParam("rerank"),
+			}, []string{"query", "documents"}),
 		},
 		map[string]any{
 			"name":        "models",

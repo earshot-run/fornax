@@ -78,3 +78,50 @@ func TestOutPathUsesFornaxOutDir(t *testing.T) {
 		t.Fatalf("without FORNAX_OUT_DIR, out moved to %s", got)
 	}
 }
+
+func TestToolListCoversEveryDispatch(t *testing.T) {
+	names := map[string]bool{}
+	for _, raw := range mcpTools() {
+		names[raw.(map[string]any)["name"].(string)] = true
+	}
+	for _, want := range []string{"ask", "see", "hear", "judge", "rerank", "embed", "imagine", "animate", "say", "models"} {
+		if !names[want] {
+			t.Errorf("tools/list is missing %q", want)
+		}
+	}
+}
+
+func TestInitializeSpeaksCurrentProtocol(t *testing.T) {
+	result, rpcErr := mcpHandle(context.Background(), "initialize", nil, "test")
+	if rpcErr != nil {
+		t.Fatal(rpcErr)
+	}
+	if got := result.(map[string]any)["protocolVersion"]; got != mcpProtocol {
+		t.Fatalf("protocolVersion=%v, want %s", got, mcpProtocol)
+	}
+}
+
+func TestJudgeValidatesBeforeAnyModelWork(t *testing.T) {
+	cases := map[string]string{
+		"no state":     `{"ask":[{"id":"a","type":"noul","instructions":"?"}]}`,
+		"no ask":       `{"state":"x"}`,
+		"noul options": `{"state":"x","ask":[{"id":"a","type":"noul","instructions":"?","options":["y","n"]}]}`,
+		"bad type":     `{"state":"x","ask":[{"id":"a","type":"maybe","instructions":"?"}]}`,
+		"choice one":   `{"state":"x","ask":[{"id":"a","type":"choice","instructions":"?","options":["only"]}]}`,
+		"no id":        `{"state":"x","ask":[{"type":"noul","instructions":"?"}]}`,
+	}
+	for name, args := range cases {
+		if _, err := mcpJudge(context.Background(), []byte(args)); err == nil {
+			t.Errorf("%s: want an error", name)
+		}
+	}
+}
+
+func TestRerankValidatesBeforeAnyModelWork(t *testing.T) {
+	if _, err := mcpRerank(context.Background(), []byte(`{"documents":["a"]}`)); err == nil {
+		t.Error("want an error for a missing query")
+	}
+	if _, err := mcpRerank(context.Background(), []byte(`{"query":"q"}`)); err == nil {
+		t.Error("want an error for missing documents")
+	}
+}

@@ -21,7 +21,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/earshot-run/fornax/internal/catalog"
 	"github.com/earshot-run/fornax/internal/modelrt"
 	"github.com/earshot-run/fornax/internal/paths"
 )
@@ -210,7 +209,7 @@ func (s *studio) handlePicks(w http.ResponseWriter, _ *http.Request) {
 	picks := make([]pickView, 0, len(hubPicks))
 	for _, p := range hubPicks {
 		repo, file := splitRef(p.Ref)
-		picks = append(picks, pickView{hubPick: p, Fit: catalog.FitFor(p.Bytes, memory).String(), Installed: installed[repo+"/"+file]})
+		picks = append(picks, pickView{hubPick: p, Fit: modelrt.Fit(p.Bytes).String(), Installed: installed[repo+"/"+file]})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"memory": memory, "picks": picks})
 }
@@ -268,7 +267,7 @@ func (s *studio) handlePreview(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"preview": p, "fit": catalog.FitFor(p.Bytes, modelrt.MemoryBytes()).String()})
+	writeJSON(w, http.StatusOK, map[string]any{"preview": p, "fit": modelrt.Fit(p.Bytes).String()})
 }
 
 type downloadRequest struct {

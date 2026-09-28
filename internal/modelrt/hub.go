@@ -203,7 +203,7 @@ func PreviewHF(ctx context.Context, ref string) (*Preview, error) {
 	}
 	fetch = append(fetch, splitCompanions(files, file)...)
 	for _, f := range fetch {
-		size, err := hfFileSize(ctx, repo, revision, f)
+		size, _, err := hfFileSize(ctx, repo, revision, f)
 		if err != nil {
 			return nil, err
 		}

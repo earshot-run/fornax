@@ -36,9 +36,12 @@ func TestHFMirrorMetadata(t *testing.T) {
 	if err != nil || len(files) != 1 || files[0] != "model.gguf" {
 		t.Fatalf("mirror listing = %v, %v", files, err)
 	}
-	size, err := hfFileSize(context.Background(), "Org/Repo", "main", files[0])
+	size, sha, err := hfFileSize(context.Background(), "Org/Repo", "main", files[0])
 	if err != nil || size != 100 || count != 2 {
 		t.Fatalf("mirror size = %d, %v (requests %d)", size, err, count)
+	}
+	if sha != strings.Repeat("a", 64) {
+		t.Fatalf("mirror digest = %q, want the x-linked-etag", sha)
 	}
 }
 
@@ -83,6 +86,54 @@ func TestPickGGUFFileRanksQuants(t *testing.T) {
 	}
 	if _, err := pickGGUFFile("org/repo", []string{"a-UD-TQ1_0.gguf", "b-UD-TQ2_0.gguf"}); err == nil {
 		t.Error("unrankable multi-file repo should fail")
+	}
+}
+
+func TestRankedGGUFFilesPreservesQuantOrder(t *testing.T) {
+	files := []string{"m-Q3_K_M.gguf", "m-Q8_0.gguf", "m-Q4_K_M.gguf", "mmproj-m.gguf"}
+	got, err := rankedGGUFFiles("org/repo", files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"m-Q4_K_M.gguf", "m-Q8_0.gguf", "m-Q3_K_M.gguf"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("ranked = %v, want %v", got, want)
+	}
+}
+
+func TestPickGGUFFileFittingPrefersWhatFits(t *testing.T) {
+	if MemoryBytes() == 0 {
+		t.Skip("machine memory unknown")
+	}
+	var heads int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodHead {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		heads++
+		switch {
+		case strings.Contains(r.URL.Path, "Q4_K_M"):
+			w.Header().Set("x-linked-size", "9000000000000000000") // far past any RAM
+		case strings.Contains(r.URL.Path, "Q3_K_M"):
+			w.Header().Set("x-linked-size", "1048576")
+		default:
+			w.Header().Set("x-linked-size", "1048576")
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("HF_ENDPOINT", srv.URL)
+
+	files := []string{"m-Q4_K_M.gguf", "m-Q3_K_M.gguf"}
+	got, err := pickGGUFFileFitting(context.Background(), "Org/Repo", "main", files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "m-Q3_K_M.gguf" {
+		t.Fatalf("picked %q, want the quant that fits", got)
+	}
+	if heads == 0 {
+		t.Fatal("expected the fit check to HEAD the candidates")
 	}
 }
 
