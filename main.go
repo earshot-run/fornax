@@ -54,7 +54,7 @@ Use models:
   record     Mic to WAV — the takes hear and talk consume
 
 Run models:
-  run        Serve a model on loopback; registers with Earshot. Ctrl-C stops
+  run        Serve a model on loopback; registers with Earshot (image models serve the images API). Ctrl-C stops
   ps         Which models are serving right now
   connect    Register an already-running model's server with Earshot
 

@@ -50,10 +50,12 @@ way, through modelrt's exported API only.
 **`catalog.Runtime` is the fork.** Llama (`llama-server`), Kev and
 Laya (python under `uv`, both speaking `/v1/systemone`), Apple (Swift stdio
 bridge fronted by a Go loopback adapter in modelrt/apple.go), SD (foreground
-`sd-cli`, no server at all). `WithServer` dispatches on it and every branch
-ends in the same `fn(url, key)` callback, so `ask`/`see`/`hear`/`test` never
-learn which runtime answered. A new runtime means a `Runtime` constant, a
-`with<X>` branch, a `spawn<X>`, and the resolve-time platform check.
+`sd-cli` for `imagine`/`animate`, or `sd-server` behind the keyed images
+adapter in modelrt/sdserve.go when `run` serves an image model).
+`WithServer` dispatches on it and every branch ends in the same `fn(url, key)`
+callback, so `ask`/`see`/`hear`/`test` never learn which runtime answered. A
+new runtime means a `Runtime` constant, a `with<X>` branch, a `spawn<X>`, and
+the resolve-time platform check.
 
 **Engines resolve at install time.** A `catalog.EngineSpec` names where a
 build lives — a GitHub repo plus an asset-name pattern, or a container image

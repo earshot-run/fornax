@@ -41,7 +41,7 @@ what agents should read.
 
 | Command | What it does |
 | --- | --- |
-| `fornax run <model>` | Serve on loopback, register with Earshot; Ctrl-C stops. `-idle 20m` stops an unused server; `--events` emits one JSON line per stage for supervisors; flags after `--` go to llama-server unchanged (`run m -- --flash-attn`) |
+| `fornax run <model>` | Serve on loopback, register with Earshot; Ctrl-C stops. `-idle 20m` stops an unused server; `--events` emits one JSON line per stage for supervisors; flags after `--` go to llama-server unchanged (`run m -- --flash-attn`). An image model serves OpenAI's images API instead — see Images over HTTP |
 | `fornax ps` | Which models are serving right now |
 | `fornax connect <model>` | Register an already-running model's server with Earshot |
 
@@ -297,7 +297,8 @@ don't apply.
 
 Image and video run on a stable-diffusion.cpp build with engine binaries
 for macOS arm64, Linux x86_64 and Windows x86_64 only. `imagine`/`animate`
-run `sd-cli` once per call, loading the model each time. The studio keeps
+run `sd-cli` once per call, loading the model each time; `imagine` reuses a
+model already up under `run` instead. The studio keeps
 the model loaded in `sd-server` between jobs instead, so only the first
 image pays for loading; it lets the model go after 10 minutes without a
 job, when a chat or speech model needs the GPU, or when a different image
@@ -316,6 +317,29 @@ fornax pull hf:Org/Repo/video.gguf --as my-video --kind video \
 
 `--with <flag>=hf:…` is any `sd-cli` file flag. Weights that come with
 companion files load as `--diffusion-model`; a lone checkpoint loads as `-m`.
+
+### Images over HTTP
+
+`fornax run <image-model>` serves an image model on its own port behind the
+generated key, like a chat model: `sd-server` holds the weights and a
+loopback adapter in front speaks OpenAI's images API. The key goes in
+`Authorization: Bearer` or `x-api-key`.
+
+```
+POST /v1/images/generations   {"prompt":"a red fox","n":1,"size":"512x512",
+                               "response_format":"b64_json","seed":1,"steps":20,
+                               "negative_prompt":"…","image":"<path|data URL|base64>"}
+POST /v1/images/edits         multipart/form-data: image=<file>, prompt=…
+GET  /v1/models               the model id, so `ps` and probes see it
+GET  /v1/files/<name>         a file from a `response_format:"url"` reply
+```
+
+`n` makes up to eight images in one call. `size` and `steps` are optional and
+fall back to the model's saved arguments. `imagine` and the MCP `imagine`
+tool reuse a model already serving under `run`, so the weights load once.
+Video is not served — OpenAI has no video route and a clip takes minutes, so
+`run` on a video model points at `animate`. `connect` does not register image
+models with Earshot, whose picker is chat models.
 Speech models run through `llama-tts` in the same llama.cpp build —
 foreground, no server — writing a 24 kHz WAV per call; `-voice take.wav`
 clones a voice from a reference take. Embed and rerank models are served by

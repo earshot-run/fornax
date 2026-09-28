@@ -357,8 +357,12 @@ func freePort(base int) (int, error) {
 	return 0, fmt.Errorf("no free loopback port near %d", base)
 }
 
-// run and connect both need a model with an OpenAI-compatible server behind it.
+// run and connect both need a model with a server behind it. An image model
+// serves OpenAI's images API; video and speech are foreground tools.
 func requireServer(spec *catalog.Spec) error {
+	if spec.Runtime == catalog.SD && spec.Kind == catalog.Image {
+		return nil
+	}
 	if spec.Runtime != catalog.SD && spec.Kind != catalog.Speech {
 		return nil
 	}
@@ -386,6 +390,15 @@ func Serve(ctx context.Context, id string, port, ctxSize int, noConnect bool, id
 	root := paths.Home()
 	if err := Pull(ctx, spec, eng); err != nil {
 		return err
+	}
+	if spec.Runtime == catalog.SD {
+		if ctxSize != catalog.ContextWindow {
+			fmt.Fprintln(os.Stderr, "note: -ctx-size is ignored for image models")
+		}
+		if len(extra) > 0 {
+			fmt.Fprintln(os.Stderr, "note: flags after -- are ignored for image models (they go to sd-cli, not sd-server)")
+		}
+		return serveSDImage(ctx, root, spec, eng, servePort, idle)
 	}
 	if spec.Runtime == catalog.Apple {
 		return runApple(ctx, root, spec, servePort, ctxSize != catalog.ContextWindow, noConnect, idle)
@@ -486,6 +499,8 @@ func holdServing(ctx context.Context, s *serving) error {
 		fmt.Printf("\n%s %s\n", ui.MarkOK(), ui.Bold(s.spec.Name)+" is serving")
 		fmt.Printf("    %s %s\n", ui.Dim("url:"), ui.Cyan(url))
 		switch {
+		case s.panel != nil:
+			s.panel(url, s.key)
 		case s.spec.Kind == catalog.Decision:
 			fmt.Println(sdkBlock(url, DecisionModel(s.spec), s.key))
 		case s.noConnect:
@@ -543,6 +558,10 @@ func Connect(id string, port int) error {
 	if err := requireServer(spec); err != nil {
 		return err
 	}
+	if spec.Runtime == catalog.SD {
+		return fmt.Errorf("%s serves images, not chat — Earshot registers chat models. Point a client at %s/images/generations with the key `fornax run %s` prints",
+			spec.ID, paths.EndpointURL(spec.Port), spec.ID)
+	}
 	servePort := spec.Port
 	if port != 0 {
 		servePort = port
@@ -595,4 +614,6 @@ type serving struct {
 	exited    <-chan error
 	stop      func()
 	sample    func() (string, bool)
+	// Replaces the chat connect block when set (image models).
+	panel func(url, key string)
 }

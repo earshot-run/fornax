@@ -439,6 +439,27 @@ func mcpSD(ctx context.Context, args json.RawMessage, verb string, kind catalog.
 		}
 		extra = append(extra, "-i", abs)
 	}
+	// An image model already up under `run` answers images/generations; reuse
+	// it so the weights are not loaded again.
+	if kind == catalog.Image {
+		req := modelrt.SDRequest{Prompt: in.Prompt}
+		if in.Image != "" {
+			abs, err := filepath.Abs(in.Image)
+			if err != nil {
+				return "", err
+			}
+			req.Refs = []string{abs}
+		}
+		if handled, err := modelrt.ServedImage(ctx, spec, req, out); handled {
+			if err != nil {
+				return "", err
+			}
+			if abs, err := filepath.Abs(out); err == nil {
+				out = abs
+			}
+			return "wrote " + out, nil
+		}
+	}
 	if err := mcpMuteStdout(func() error {
 		root, eng, err := modelrt.PrepareSD(ctx, spec)
 		if err != nil {

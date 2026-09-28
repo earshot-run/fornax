@@ -102,6 +102,7 @@ reach it only through its exported API.
 | `apple.go` + `bridge.swift` | Apple Foundation Models: Swift stdio bridge + loopback adapter |
 | `sd.go` | the stable-diffusion.cpp builds, `PrepareSD`, the `sd-cli` invocation |
 | `sdserver.go` | `StartSD`: a warm `sd-server` and its native async job API |
+| `sdserve.go` | `run` for an image model: the keyed OpenAI images adapter over `sd-server`, and `ServedImage` reuse |
 | `tts.go` | `llama-tts`: `PrepareSpeech`, `RunSay`, `TTSCommand` |
 | `backend.go` | which engine build (cpu/metal/vulkan/cuda) this machine runs |
 | `fit.go` | the fit check and the memory budget it compares against (VRAM when there is a separate pool) |

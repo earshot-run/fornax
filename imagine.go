@@ -96,6 +96,32 @@ func cmdSD(ctx context.Context, verb string, kind catalog.Modality, ext string, 
 	if outPath == "" {
 		outPath = fmt.Sprintf("%s-%d.%s", spec.ID, time.Now().Unix(), ext)
 	}
+	// A model already up under `run` answers images/generations; reuse it so
+	// the weights are not loaded again.
+	if kind == catalog.Image {
+		req := modelrt.SDRequest{Prompt: prompt, Negative: *neg, Steps: *steps, Seed: *seed}
+		if *size != "" {
+			width, height, err := drawSize(*size)
+			if err != nil {
+				return err
+			}
+			req.Width, req.Height = width, height
+		}
+		if *image != "" {
+			abs, err := filepath.Abs(*image)
+			if err != nil {
+				return err
+			}
+			req.Refs = []string{abs}
+		}
+		if handled, err := modelrt.ServedImage(ctx, spec, req, outPath); handled {
+			if err != nil {
+				return err
+			}
+			fmt.Printf("%s wrote %s (served by %s)\n", ui.Green("✓"), outPath, spec.ID)
+			return nil
+		}
+	}
 	root, eng, err := modelrt.PrepareSD(ctx, spec)
 	if err != nil {
 		return err
