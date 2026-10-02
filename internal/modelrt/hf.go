@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -251,7 +252,15 @@ func parseHFRef(arg, revFlag string) (repo, rev, file string, err error) {
 
 // Every file in a repo, from the model API's siblings list.
 func repoFiles(ctx context.Context, repo string) ([]string, error) {
-	req, err := hfRequest(ctx, http.MethodGet, HFHost+"/api/models/"+repo)
+	return repoFilesRevision(ctx, repo, "main")
+}
+
+func repoFilesRevision(ctx context.Context, repo, revision string) ([]string, error) {
+	endpoint := HFHost + "/api/models/" + repo
+	if revision != "main" {
+		endpoint += "/revision/" + url.PathEscape(revision)
+	}
+	req, err := hfRequest(ctx, http.MethodGet, endpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -314,6 +323,9 @@ func rankedGGUFFiles(repo string, files []string) ([]string, error) {
 		if !strings.HasSuffix(base, ".gguf") || strings.Contains(base, "mmproj") {
 			continue
 		}
+		if part := splitPartPattern.FindStringSubmatch(filepath.Base(f)); part != nil && part[2] != "00001" {
+			continue
+		}
 		cands = append(cands, f)
 	}
 	if len(cands) == 0 {
@@ -349,11 +361,24 @@ func pickGGUFFileFitting(ctx context.Context, repo, revision string, files []str
 		return ranked[0], nil
 	}
 	for _, f := range ranked {
-		size, _, err := hfFileSize(ctx, repo, revision, f)
-		if err != nil {
-			break
+		fetch := append([]string{f}, splitCompanions(files, f)...)
+		if projector := findMMProj(files, f); projector != "" {
+			kind := inferKind(repo, f, true)
+			if kind == "vision" || kind == "audio" || kind == "speech" {
+				fetch = append(fetch, projector)
+			}
 		}
-		if catalog.FitFor(size, ram) != catalog.Wont {
+		var size int64
+		fits := true
+		for _, file := range fetch {
+			n, _, err := hfFileSize(ctx, repo, revision, file)
+			if err != nil || n > ram || size > ram-n {
+				fits = false
+				break
+			}
+			size += n
+		}
+		if fits && catalog.FitFor(size, ram) != catalog.Wont {
 			return f, nil
 		}
 	}
@@ -382,6 +407,28 @@ func splitCompanions(files []string, picked string) []string {
 	}
 	sort.Strings(parts)
 	return parts
+}
+
+// Validate that part 1 can actually bring the whole archive along.
+func validateSplitFiles(files []string, picked string) error {
+	m := splitPartPattern.FindStringSubmatch(filepath.Base(picked))
+	if m == nil {
+		return nil
+	}
+	if m[2] != "00001" {
+		return fmt.Errorf("split weights must start with part 1: %s", picked)
+	}
+	total, _ := strconv.Atoi(m[3])
+	if total < 1 {
+		return fmt.Errorf("invalid split archive: %s", picked)
+	}
+	for i := 1; i <= total; i++ {
+		part := filepath.Join(filepath.Dir(picked), fmt.Sprintf("%s%05d-of-%s.gguf", m[1], i, m[3]))
+		if !slices.Contains(files, part) {
+			return fmt.Errorf("split archive is incomplete: missing %s", part)
+		}
+	}
+	return nil
 }
 
 // A projector sibling for vision/audio/speech models — prefer one in the
@@ -618,8 +665,8 @@ func ensureHF(ctx context.Context, arg, as, kind, mmproj, revFlag string, with [
 	}
 	fetching := ui.Spin("resolving " + repo)
 	var files []string
-	if file == "" || !diffusion {
-		if files, err = repoFiles(ctx, repo); err != nil {
+	if file == "" || !diffusion || splitPartPattern.MatchString(filepath.Base(file)) {
+		if files, err = repoFilesRevision(ctx, repo, revision); err != nil {
 			fetching.Stop("")
 			return nil, err
 		}
@@ -629,6 +676,10 @@ func ensureHF(ctx context.Context, arg, as, kind, mmproj, revFlag string, with [
 			fetching.Stop("")
 			return nil, err
 		}
+	}
+	if err := validateSplitFiles(files, file); err != nil {
+		fetching.Stop("")
+		return nil, err
 	}
 	if kind == "" {
 		kind = inferKind(repo, file, findMMProj(files, file) != "")

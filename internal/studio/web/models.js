@@ -14,7 +14,7 @@
   const MODE = { chat: "chat", image: "image", speech: "voice", video: "video" };
   const FIT = { "fits": ["fits", "Fits"], "tight": ["tight", "Tight fit"], "won't fit": ["wont", "Too big"] };
 
-  const state = { token: null, tokenOpen: false, kind: store.get("modelsKind", "all"), picks: [], popular: {}, popularError: {}, pending: new Set(), fitOnly: store.get("modelsFitOnly", false), sort: store.get("modelsSort", "downloads"), searchError: "", memory: 0, backend: "", query: "", results: null, searching: false, previews: {}, downloads: [] };
+  const state = { token: null, tokenOpen: false, kind: store.get("modelsKind", "all"), picks: [], popular: {}, popularError: {}, pending: new Set(), fitOnly: store.get("modelsFitOnly", false), sort: store.get("modelsSort", "downloads"), searchError: "", choices: {}, details: new Set(), memory: 0, backend: "", query: "", results: null, searching: false, previews: {}, downloads: [] };
   if (!["downloads", "lastModified"].includes(state.sort)) state.sort = "downloads";
   const ui = {};
 
@@ -77,7 +77,7 @@
   }
 
   // The button (or progress) a card ends with, for a pick or a search result.
-  function actionFor(match, installedId, kind, request) {
+  function actionFor(match, installedId, kind, request, readiness) {
     const d = downloadFor(match);
     if (installedId || d?.state === "done") {
       const id = installedId || d.model;
@@ -95,13 +95,15 @@
     }
     const btn = el("button", { type: "button", className: "action primary" }, icon("down"), "Download");
     const pending = state.pending.has(request.key || request.ref);
-    btn.disabled = pending;
+    const unsupported = readiness && !readiness.supported;
+    btn.disabled = pending || unsupported;
+    if (unsupported) { btn.lastChild.textContent = "Unavailable here"; btn.title = readiness.reason; }
     if (pending) btn.lastChild.textContent = "Starting…";
     btn.onclick = () => start(request);
     const nodes = [btn];
     if (d?.state === "failed") {
       nodes.unshift(el("p", { className: "card-error", textContent: d.error }));
-      if (!pending) btn.lastChild.textContent = "Try again";
+      if (!pending && !unsupported) btn.lastChild.textContent = "Try again";
     }
     return el("div", { className: "card-action" }, ...nodes);
   }
@@ -125,17 +127,51 @@
     ui.resultTitle.textContent = state.sort === "lastModified" ? "Recently updated matches" : "Search results";
   }
 
+  function readinessNote(ready) {
+    if (!ready) return null;
+    return el("p", { className: "runtime-note" + (ready.supported ? "" : " unsupported"), textContent: ready.supported ? `${ready.backend?.toUpperCase() || "Local"} · ${ready.reason}` : ready.reason });
+  }
+
+  function inspection(cacheKey, load) {
+    const pv = state.previews[cacheKey];
+    const expanded = state.details.has(cacheKey);
+    const button = el("button", { type: "button", className: "text-btn inspect-btn", textContent: expanded ? "Hide files" : "Inspect files" });
+    button.setAttribute("aria-expanded", String(expanded));
+    button.onclick = () => {
+      if (expanded) state.details.delete(cacheKey);
+      else { state.details.add(cacheKey); if (!pv?.preview && !pv?.loading) load(); }
+      render();
+    };
+    const panel = el("div", { className: "preview-details", hidden: !expanded });
+    if (pv?.loading) panel.append(el("p", { className: "muted", role: "status", textContent: "Checking all model files…" }));
+    else if (pv?.error) panel.append(retryNotice(pv.error, load));
+    else if (pv?.preview) {
+      const p = pv.preview;
+      panel.append(el("div", { className: "preview-total" }, el("strong", { textContent: `${fmtBytes(p.bytes)} total model files` }), fitPill(pv.fit)),
+        el("ul", { className: "preview-files" }, ...(p.files || []).map((f) => el("li", {},
+          el("span", { textContent: f.flag ? `${f.flag}: ${f.file}` : f.file }), el("span", { className: "muted", textContent: fmtBytes(f.bytes) })))),
+        readinessNote(p.readiness),
+        el("p", { className: "muted", textContent: "Engine downloads and runtime memory overhead are additional." }));
+      if (p.args?.length) panel.append(el("code", { className: "recipe-args", textContent: p.args.join(" ") }));
+    }
+    return el("div", { className: "model-inspection" }, button, panel);
+  }
+
   function renderPicks() {
     const matching = state.picks.filter((p) => shown(p.kind));
-    const picks = matching.filter((p) => !state.fitOnly || p.fit === "fits");
+    const picks = matching.filter((p) => !state.fitOnly || (state.previews[p.ref]?.fit || p.fit) === "fits");
     ui.picks.hidden = !matching.length || !!state.query;
-    ui.pickGrid.replaceChildren(...picks.map((p) => el("article", { className: "pick-card" },
-      el("div", { className: "pick-top" }, el("span", { className: "kind-label", textContent: KINDS.find((k) => k.id === p.kind)?.label || p.kind }), fitPill(p.fit)),
-      el("h3", { textContent: p.title }),
-      el("p", { className: "pick-blurb", textContent: p.blurb }),
-      el("div", { className: "pick-foot" },
-        el("span", { className: "muted", textContent: fmtBytes(p.bytes) }),
-        actionFor({ key: p.key }, p.installed, p.kind, { key: p.key })))));
+    ui.pickGrid.replaceChildren(...picks.map((p) => {
+      const pv = state.previews[p.ref];
+      const ready = pv?.preview?.readiness || p.readiness;
+      return el("article", { className: "pick-card" },
+        el("div", { className: "pick-top" }, el("span", { className: "kind-label", textContent: KINDS.find((k) => k.id === p.kind)?.label || p.kind }), fitPill(pv?.fit || p.fit)),
+        el("h3", { textContent: p.title }), el("p", { className: "pick-blurb", textContent: p.blurb }),
+        readinessNote(ready), inspection(p.ref, () => preview(p.ref, { key: p.key })),
+        el("div", { className: "pick-foot" },
+          el("span", { className: "muted", title: pv?.preview ? "All model files checked" : "Estimated model files; inspect to verify", textContent: fmtBytes(pv?.preview?.bytes || p.bytes) }),
+          actionFor({ ref: p.ref }, p.installed, p.kind, { key: p.key }, ready)));
+    }));
     if (matching.length && !picks.length) ui.pickGrid.append(el("p", { className: "model-notice", textContent: "No picks fit this memory budget. Turn off the filter to see all picks, or search for a smaller model." }));
   }
 
@@ -170,8 +206,8 @@
     }));
   }
 
-  function installedId(repo) {
-    return Studio.models.find((m) => m.repo === repo)?.id || "";
+  function installedId(repo, file) {
+    return Studio.models.find((m) => m.repo === repo && (!file || m.file === file))?.id || "";
   }
 
   // A curated pick for this repo downloads its companion files and engine arguments.
@@ -180,37 +216,44 @@
   }
 
   function hitRow(h, kindHint) {
-    const ref = "hf:" + h.repo;
-    const id = installedId(h.repo);
-    const pv = state.previews[ref];
-    const previewKind = pv?.preview?.kind;
-    const kind = id
-      ? kindOf(Studio.models.find((m) => m.id === id))
-      : previewKind === "image" || previewKind === "speech" || previewKind === "video" ? previewKind : (kindHint || "chat");
+    const chosen = state.choices[h.repo] || "";
+    const ref = "hf:" + h.repo + (chosen ? "/" + chosen : "");
     const pick = pickForRepo(h.repo);
-    const request = pick ? { key: pick.key } : { ref, bytes: pv?.preview?.bytes || 0, ...(kindHint ? { kind: kindHint } : {}) };
+    const options = pick ? { key: pick.key, ...(chosen ? { file: chosen } : {}) } : { ref, ...(kindHint ? { kind: kindHint } : {}) };
+    const pv = state.previews[ref];
+    const id = installedId(h.repo, chosen || pv?.preview?.file);
+    const kind = id ? kindOf(Studio.models.find((m) => m.id === id)) : MODE[pv?.preview?.kind] ? pv.preview.kind : (kindHint || "chat");
+    const request = pick ? options : { ...options, ref: pv?.preview?.ref || ref, bytes: pv?.preview?.bytes || 0 };
+    const weightFiles = h.ggufs.filter((f) => !/mmproj/i.test(f) && (!/-\d{5}-of-\d{5}\.gguf$/i.test(f) || /-00001-of-\d{5}\.gguf$/i.test(f)));
     const right = [];
-    if (!h.ggufs.length) {
-      right.push(el("span", { className: "muted", textContent: "no GGUF files" }));
-    } else {
-      if (pv?.preview) {
-        right.push(el("span", { className: "muted", textContent: `${pv.preview.file.split("/").pop()} · ${fmtBytes(pv.preview.bytes)}` }), fitPill(pv.fit));
-      } else if (pv?.loading) {
-        right.push(el("span", { className: "muted", textContent: "Checking…" }));
-      } else if (pv?.error) {
-        right.push(el("span", { className: "card-error", textContent: pv.error }));
-      } else {
-        const check = el("button", { type: "button", className: "text-btn", textContent: "Check size" });
-        check.onclick = () => preview(ref);
+    if (!weightFiles.length) right.push(el("span", { className: "muted", textContent: "no GGUF weights" }));
+    else {
+      const choice = el("select", { className: "quant-choice" }, el("option", { value: "", textContent: pick ? "Recommended recipe" : "Choose for my memory" }),
+        ...weightFiles.map((file) => el("option", { value: file, textContent: file })));
+      choice.value = chosen;
+      choice.setAttribute("aria-label", `Weight file for ${h.repo}`);
+      choice.onchange = () => {
+        state.choices[h.repo] = choice.value;
+        const nextRef = "hf:" + h.repo + (choice.value ? "/" + choice.value : "");
+        state.details.add(nextRef);
+        preview(nextRef, pick ? { key: pick.key, ...(choice.value ? { file: choice.value } : {}) } : { ref: nextRef, ...(kindHint ? { kind: kindHint } : {}) });
+      };
+      right.push(choice);
+      if (pv?.preview) right.push(el("span", { className: "muted", textContent: `${pv.preview.file.split("/").pop()} · ${fmtBytes(pv.preview.bytes)} total` }), fitPill(pv.fit));
+      if (!pick && !pv?.preview && !id && !downloadFor({ ref })) {
+        const check = el("button", { type: "button", className: "action primary", disabled: !!pv?.loading, textContent: pv?.loading ? "Checking files…" : "Check files" });
+        check.onclick = () => { state.details.add(ref); preview(ref, options); };
         right.push(check);
+      } else {
+        right.push(actionFor({ ref: pv?.preview?.ref || (pick && !chosen ? pick.ref : ref) }, id, kind, request, pv?.preview?.readiness || pick?.readiness));
       }
-      right.push(actionFor({ ref: pick ? pick.ref : ref, key: pick?.key }, id, kind, request));
     }
-    return el("div", { className: "model-row result-row" },
-      el("div", { className: "model-row-main" },
-        el("strong", { textContent: h.repo }),
-        el("span", { className: "muted", textContent: `${fmtCount(h.downloads)} downloads · ${h.ggufs.length} GGUF file${h.ggufs.length === 1 ? "" : "s"}${h.updated && Date.parse(h.updated) > 0 ? " · updated " + new Date(h.updated).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : ""}` })),
-      el("div", { className: "result-right" }, ...right));
+    return el("div", { className: "result-item" },
+      el("div", { className: "model-row result-row" },
+        el("div", { className: "model-row-main" }, el("strong", { textContent: h.repo }),
+          el("span", { className: "muted", textContent: `${fmtCount(h.downloads)} downloads · ${weightFiles.length} weight choice${weightFiles.length === 1 ? "" : "s"}${h.updated && Date.parse(h.updated) > 0 ? " · updated " + new Date(h.updated).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : ""}` })),
+        el("div", { className: "result-right" }, ...right)),
+      weightFiles.length ? inspection(ref, () => preview(ref, options)) : null);
   }
 
   function renderPopular() {
@@ -242,10 +285,10 @@
     ui.downloadList.replaceChildren(...active.map((d) => {
       const dismiss = el("button", { type: "button", className: "icon-btn small-icon", title: d.state === "running" ? "Cancel download" : "Dismiss download" }, icon("x"));
       dismiss.onclick = () => cancelDownload(d);
-      const retry = el("button", { type: "button", className: "text-btn", textContent: "Try again", disabled: state.pending.has(d.key || d.ref) });
-      retry.onclick = () => start(d.key ? { key: d.key } : { ref: d.ref, kind: d.kind || "" });
+      const retry = el("button", { type: "button", className: "text-btn", textContent: d.state === "interrupted" ? "Resume" : "Try again", disabled: state.pending.has(d.key || d.ref) });
+      retry.onclick = () => start(d.request || (d.key ? { key: d.key } : { ref: d.ref, kind: d.kind || "" }));
       return el("div", { className: "model-row" },
-        el("div", { className: "model-row-main" }, el("strong", { textContent: d.title }), el("span", { className: d.state === "failed" ? "card-error" : "muted", textContent: d.state === "failed" ? d.error : d.total ? `${fmtBytes(d.done)} of ${fmtBytes(d.total)}` : "Preparing download…" })),
+        el("div", { className: "model-row-main" }, el("strong", { textContent: d.title }), el("span", { className: d.state === "failed" ? "card-error" : "muted", textContent: d.state === "failed" || d.state === "interrupted" ? d.error : d.total ? `${fmtBytes(d.done)} of ${fmtBytes(d.total)}` : "Preparing download…" })),
         d.state === "running" ? progress(d) : retry, dismiss);
     }));
   }
@@ -367,11 +410,11 @@
     }, 350);
   }
 
-  async function preview(ref) {
+  async function preview(ref, options = { ref }) {
     state.previews[ref] = { loading: true };
     render();
     try {
-      const res = await fetch(`/api/hub/preview?ref=${encodeURIComponent(ref)}`);
+      const res = await fetch("/api/hub/preview?" + new URLSearchParams(options));
       state.previews[ref] = res.ok ? await res.json() : { error: (await res.text()).trim() };
     } catch { state.previews[ref] = { error: "Could not reach Hugging Face" }; }
     render();

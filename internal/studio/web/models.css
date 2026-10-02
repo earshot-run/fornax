@@ -129,3 +129,22 @@
   .models-welcome h2 { font-size: 21px; }
   .models-welcome p { font-size: 13px; }
 }
+
+.runtime-note { margin: 0; font-size: 12px; line-height: 1.5; color: var(--text-2); }
+.runtime-note.unsupported { color: var(--danger); }
+.model-inspection { min-width: 0; }
+.inspect-btn { padding: 3px 0; font-size: 12px; }
+.preview-details { margin: 8px 0; padding: 12px; background: var(--surface-2); border-radius: 10px; display: flex; flex-direction: column; gap: 10px; }
+.preview-details p { margin: 0; }
+.preview-total { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; }
+.preview-files { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.preview-files li { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; }
+.preview-files li > span:first-child { overflow-wrap: anywhere; min-width: 0; }
+.preview-files .muted { flex: none; font-size: 12px; }
+.recipe-args { overflow-wrap: anywhere; font-size: 11px; color: var(--text-2); }
+.result-item { border-top: 1px solid var(--border); }
+.result-item:first-child { border-top: 0; }
+.result-item > .model-inspection { padding: 0 16px 12px; }
+.quant-choice { max-width: 100%; padding: 7px 10px; font-size: 12px; }
+.result-right { min-width: 0; }
+.action:disabled { opacity: .6; }

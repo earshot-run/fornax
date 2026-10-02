@@ -21,22 +21,44 @@ Implemented in this pass. Backend tests use an HTTP fixture; browser regression
 checks exercise the embedded frontend in Chromium. Live model downloads and
 inference are separate opt-in checks.
 
-## Next increments
+## Model setup and recovery
 
-1. **Choose before downloading.** Expose exact quantization and file choices,
-   account for companion files in size previews, and let users inspect the
-   selected recipe before installing. Validate with split weights, projectors
-   and image/video companions.
-2. **Explain readiness.** Surface platform/runtime support and actionable
-   prerequisites beside each pick, then test first download, model startup and
-   one useful result for representative chat/image/voice models on supported
-   hardware. Verify current upstream files and engine assets before changing
-   recommendations.
-3. **Recover across restarts.** Persist resumable download intent and expose
-   progress on reconnect, while distinguishing interrupted work from completed
-   installs. Test process shutdown during a transfer and restart without losing
-   downloaded bytes or inventing completion.
+Implemented after the first pass:
 
-Each increment should use the existing Resolve/Pull/WithServer paths and ship
-with failure-path checks. Avoid introducing another model catalog or assuming
-that Hugging Face popularity proves local runtime compatibility.
+- Exact GGUF weight choices, hiding projectors and later split shards from the
+  selector. Generic downloads check their complete file set before submitting
+  the resolved reference.
+- Read-only previews of every weight shard, projector and recipe companion,
+  including per-file sizes, the full total and the saved engine arguments.
+  Alternate quants keep their original curated recipe.
+- Runtime/build support and installed-engine information beside picks and in
+  previews; unsupported downloads explain why they are unavailable.
+- Memory-aware selection counts shards and projectors. Revision-specific
+  listings match the requested revision; incomplete split archives fail early.
+- A private download journal preserves requests and progress. Shutdown stops
+  active children; restarts show Resume, retaining range-resumable partial files
+  through the shared downloader. Cancel dismisses intent, and stale completion
+  records cannot reappear as installed models.
+- Studio downloads use an input lease to stop children immediately if studio
+  exits, with heartbeat cancellation for other event supervisors.
+- Download completion requires an installed event. Oversized event streams
+  fail without leaving a blocked child process.
+
+Backend fixtures cover recipe totals, revisions, interrupted downloads and
+journal failures. Chromium checks cover choices, inspection, readiness and
+resuming the exact request, alongside the first-pass workflows.
+
+## Remaining validation and follow-up
+
+1. Verify representative chat/image/voice inference on supported hardware with
+   current upstream models and engine assets. Hugging Face access is currently
+   blocked by this cloud environment's proxy; fixture checks do not establish
+   live model compatibility. Recommendations have not been changed.
+2. Add explicit architecture/recipe validation for arbitrary discovered models,
+   beyond engine/platform availability. A popularity or recency score cannot
+   establish local compatibility.
+3. Consider a recommendation refresh policy and disk-space checks once the
+   selected recipes can be validated against live upstream sources.
+
+Keep new work on Resolve/Pull/WithServer paths, with failure-path checks, and
+preserve loopback authentication and artifact verification.

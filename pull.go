@@ -6,6 +6,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -16,6 +17,23 @@ import (
 )
 
 func cmdPull(ctx context.Context, args []string) error {
+	// Internal studio lease: stdin closes immediately when its parent exits.
+	// Strip the private switch before the public flag parser or HF dispatch.
+	filtered := make([]string, 0, len(args))
+	leased := false
+	for _, arg := range args {
+		if arg == "--studio-leash" {
+			leased = true
+		} else {
+			filtered = append(filtered, arg)
+		}
+	}
+	args = filtered
+	if leased {
+		var cancel context.CancelFunc
+		ctx, cancel = inputLeashedPull(ctx, os.Stdin)
+		defer cancel()
+	}
 	set := flag.NewFlagSet("pull", flag.ExitOnError)
 	asEvents := set.Bool("events", false, "one JSON event per line on stdout")
 	set.Usage = ui.UsageFunc(set, "usage: fornax pull [--events] <model>…   (a saved id, hf:Org/Repo[/File.gguf], or ollama:<name>[:<tag>])")
@@ -37,7 +55,9 @@ func cmdPull(ctx context.Context, args []string) error {
 		return fmt.Errorf("usage: fornax pull <model>…   (a saved id, hf:Org/Repo[/File.gguf], or ollama:<name>[:<tag>])")
 	}
 	if *asEvents {
-		events.Enable()
+		var cancel context.CancelFunc
+		ctx, cancel = startPullEvents(ctx)
+		defer cancel()
 	}
 	for _, id := range ids {
 		spec, eng, err := modelrt.Resolve(ctx, id)
@@ -102,7 +122,9 @@ func cmdPullHF(ctx context.Context, args []string) error {
 		return fmt.Errorf("usage: fornax pull hf:Org/Repo[/File.gguf] [--as name] [--kind K]")
 	}
 	if *asEvents {
-		events.Enable()
+		var cancel context.CancelFunc
+		ctx, cancel = startPullEvents(ctx)
+		defer cancel()
 	}
 	spec, err := func() (*catalog.Spec, error) {
 		spec, err := modelrt.EnsureHF(ctx, ref[0], modelrt.HFOptions{
@@ -165,7 +187,9 @@ func cmdPullOllama(ctx context.Context, args []string) error {
 		return fmt.Errorf("usage: fornax pull ollama:<name>[:<tag>] [--as name] [--kind vision]")
 	}
 	if *asEvents {
-		events.Enable()
+		var cancel context.CancelFunc
+		ctx, cancel = startPullEvents(ctx)
+		defer cancel()
 	}
 	spec, err := func() (*catalog.Spec, error) {
 		spec, err := modelrt.EnsureOllama(ctx, ref[0], *as, *kind)
@@ -186,4 +210,31 @@ func cmdPullOllama(ctx context.Context, args []string) error {
 	fmt.Fprintf(os.Stderr, "%s saved as %s — `fornax ask %s …` / `fornax run %s`\n",
 		ui.Green("✓"), ui.Bold(spec.ID), spec.ID, spec.ID)
 	return nil
+}
+
+// Pull's event reader is its supervisor, just as it is for a served model.
+// A heartbeat cancels downloads even when no file progress is being emitted.
+func startPullEvents(parent context.Context) (context.Context, context.CancelFunc) {
+	events.Enable()
+	ctx, cancel := supervisedPullContext(parent, events.SupervisorGone())
+	go events.Heartbeat(ctx.Done())
+	return ctx, cancel
+}
+
+func supervisedPullContext(parent context.Context, gone <-chan struct{}) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	go func() {
+		select {
+		case <-gone:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
+}
+
+func inputLeashedPull(parent context.Context, input io.Reader) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	go func() { _, _ = io.Copy(io.Discard, input); cancel() }()
+	return ctx, cancel
 }

@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -103,11 +104,12 @@ func (p *hubPick) pullArgs() []string {
 }
 
 type hubDownload struct {
-	ID    string `json:"id"`
-	Key   string `json:"key,omitempty"`
-	Ref   string `json:"ref"`
-	Title string `json:"title"`
-	Kind  string `json:"kind,omitempty"`
+	ID      string          `json:"id"`
+	Key     string          `json:"key,omitempty"`
+	Ref     string          `json:"ref"`
+	Title   string          `json:"title"`
+	Kind    string          `json:"kind,omitempty"`
+	Request downloadRequest `json:"request"`
 	// running, done, failed
 	State string `json:"state"`
 	// The file being fetched right now, and how far along the whole pull is.
@@ -195,8 +197,9 @@ func setHFToken(root, token string) error {
 
 type pickView struct {
 	hubPick
-	Fit       string `json:"fit"`
-	Installed string `json:"installed,omitempty"`
+	Fit       string                   `json:"fit"`
+	Readiness modelrt.RuntimeReadiness `json:"readiness"`
+	Installed string                   `json:"installed,omitempty"`
 }
 
 func (s *studio) handlePicks(w http.ResponseWriter, _ *http.Request) {
@@ -210,7 +213,7 @@ func (s *studio) handlePicks(w http.ResponseWriter, _ *http.Request) {
 	picks := make([]pickView, 0, len(hubPicks))
 	for _, p := range hubPicks {
 		repo, file := splitRef(p.Ref)
-		picks = append(picks, pickView{hubPick: p, Fit: modelrt.Fit(p.Bytes).String(), Installed: installed[repo+"/"+file]})
+		picks = append(picks, pickView{hubPick: p, Fit: modelrt.Fit(p.Bytes).String(), Installed: installed[repo+"/"+file], Readiness: modelrt.ReadinessForKind(s.root, p.Kind)})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"memory": memory, "picks": picks})
 }
@@ -279,12 +282,26 @@ func hubSort(w http.ResponseWriter, r *http.Request) (string, bool) {
 }
 
 func (s *studio) handlePreview(w http.ResponseWriter, r *http.Request) {
-	ref := r.URL.Query().Get("ref")
+	ref, kind := r.URL.Query().Get("ref"), r.URL.Query().Get("kind")
+	var with []modelrt.Companion
+	var args []string
+	if key := r.URL.Query().Get("key"); key != "" {
+		pick, err := resolveHubPick(key, r.URL.Query().Get("file"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		ref, kind, args = pick.Ref, pick.pullKind, strings.Fields(pick.args)
+		for _, c := range pick.with {
+			flag, ref, _ := strings.Cut(c, "=")
+			with = append(with, modelrt.Companion{Flag: flag, Ref: ref})
+		}
+	}
 	if !strings.HasPrefix(ref, "hf:") || !modelrt.IsHFRef(ref) {
-		http.Error(w, "preview takes an hf: ref", http.StatusBadRequest)
+		http.Error(w, "preview takes an hf: ref or a pick", http.StatusBadRequest)
 		return
 	}
-	p, err := modelrt.PreviewHF(r.Context(), ref)
+	p, err := modelrt.PreviewHFWithOptions(r.Context(), ref, kind, with, args)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -292,8 +309,38 @@ func (s *studio) handlePreview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"preview": p, "fit": modelrt.Fit(p.Bytes).String()})
 }
 
+// An alternate quant keeps every companion and argument of the original recipe.
+func resolveHubPick(key, file string) (hubPick, error) {
+	i := slices.IndexFunc(hubPicks, func(p hubPick) bool { return p.Key == key })
+	if i < 0 {
+		return hubPick{}, errors.New("no such pick")
+	}
+	pick := hubPicks[i]
+	if file != "" {
+		if !validWeightChoice(file) {
+			return hubPick{}, errors.New("choose a GGUF weight file, starting with part 1 for a split model")
+		}
+		repo, _ := splitRef(pick.Ref)
+		pick.Ref = "hf:" + repo + "/" + file
+		pick.Bytes = 0 // An alternate quant has a different size; progress events size it.
+	}
+	return pick, nil
+}
+
+func validWeightChoice(file string) bool {
+	base := strings.ToLower(filepath.Base(file))
+	if !strings.HasSuffix(base, ".gguf") || strings.Contains(base, "mmproj") || strings.Contains(file, "..") || strings.ContainsAny(file, "\\@?#") || strings.HasPrefix(file, "/") {
+		return false
+	}
+	if i := strings.LastIndex(base, "-of-"); i >= 0 {
+		return strings.HasSuffix(base[:i], "-00001")
+	}
+	return true
+}
+
 type downloadRequest struct {
 	Key   string `json:"key"`
+	File  string `json:"file,omitempty"`
 	Ref   string `json:"ref"`
 	Bytes int64  `json:"bytes"`
 	Kind  string `json:"kind"`
@@ -308,12 +355,12 @@ func (s *studio) handleDownload(w http.ResponseWriter, r *http.Request) {
 	var pick hubPick
 	switch {
 	case req.Key != "":
-		i := slices.IndexFunc(hubPicks, func(p hubPick) bool { return p.Key == req.Key })
-		if i < 0 {
-			http.Error(w, "no such pick", http.StatusBadRequest)
+		var err error
+		pick, err = resolveHubPick(req.Key, req.File)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		pick = hubPicks[i]
 	// Only explicit refs: the child pull also takes bare Org/Repo and ids,
 	// which a page has no business sending.
 	case strings.HasPrefix(req.Ref, "hf:") && modelrt.IsHFRef(req.Ref), strings.HasPrefix(req.Ref, "ollama:") && modelrt.IsOllamaRef(req.Ref):
@@ -334,17 +381,33 @@ func (s *studio) handleDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
+	if s.shuttingDown {
+		s.mu.Unlock()
+		http.Error(w, "studio is shutting down; resume after restart", http.StatusServiceUnavailable)
+		return
+	}
 	for _, d := range s.downloads {
 		if d.Ref == pick.Ref && d.State == "running" {
+			view := *d
 			s.mu.Unlock()
-			writeJSON(w, http.StatusOK, d)
+			writeJSON(w, http.StatusOK, view)
 			return
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	d := &hubDownload{ID: newStudioID(), Key: pick.Key, Ref: pick.Ref, Title: pick.Title, Kind: pick.pullKind, State: "running",
+	d := &hubDownload{ID: newStudioID(), Key: pick.Key, Ref: pick.Ref, Title: pick.Title, Kind: pick.pullKind, Request: req, State: "running",
 		expected: pick.Bytes, Total: pick.Bytes, files: map[string][2]int64{}, cancel: cancel}
+	// A retry replaces its previous failed/interrupted intent.
+	before := slices.Clone(s.downloads)
+	s.downloads = slices.DeleteFunc(s.downloads, func(old *hubDownload) bool { return old.Ref == pick.Ref && old.State != "running" })
 	s.downloads = append(s.downloads, d)
+	if err := s.saveDownloadsLocked(); err != nil {
+		s.downloads = before
+		cancel()
+		s.mu.Unlock()
+		http.Error(w, "could not save download: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	s.notifyLocked()
 	view := *d
 	s.mu.Unlock()
@@ -361,10 +424,15 @@ func (s *studio) handleCancelDownload(w http.ResponseWriter, r *http.Request) {
 		if d.ID != id {
 			continue
 		}
+		before := slices.Clone(s.downloads)
+		s.downloads = slices.Delete(slices.Clone(s.downloads), i, i+1)
+		if err := s.saveDownloadsLocked(); err != nil {
+			s.downloads = before
+			http.Error(w, "could not dismiss download: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 		if d.State == "running" {
 			d.cancel()
-		} else {
-			s.downloads = slices.Delete(s.downloads, i, i+1)
 		}
 		s.notifyLocked()
 		w.WriteHeader(http.StatusNoContent)
@@ -395,20 +463,32 @@ func (s *studio) runDownload(ctx context.Context, d *hubDownload, args []string)
 	d.cancel()
 	switch {
 	case canceled:
-		s.downloads = slices.DeleteFunc(s.downloads, func(x *hubDownload) bool { return x == d })
+		if s.shuttingDown {
+			d.State, d.Error = "interrupted", "Studio stopped during this download. Resume to reuse partial files."
+		} else {
+			s.downloads = slices.DeleteFunc(s.downloads, func(x *hubDownload) bool { return x == d })
+		}
 	case err != nil:
 		d.State, d.Error = "failed", err.Error()
 	default:
-		d.State, d.Done = "done", d.Total
+		d.State, d.Done, d.Error = "done", d.Total, ""
+	}
+	if err := s.saveDownloadsLocked(); err != nil {
+		d.State, d.Error = "failed", "Could not save download status: "+err.Error()
 	}
 	s.notifyLocked()
 }
 
 func (s *studio) pullEvents(ctx context.Context, d *hubDownload, args []string) error {
-	cmd, err := s.fornaxCommand(ctx, args...)
+	cmd, err := s.fornaxCommand(ctx, append(args, "--studio-leash")...)
 	if err != nil {
 		return err
 	}
+	lease, err := cmd.StdinPipe()
+	if err != nil {
+		return err
+	}
+	defer lease.Close()
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -445,14 +525,29 @@ func (s *studio) pullEvents(ctx context.Context, d *hubDownload, args []string) 
 			failure = ev.Message
 		}
 	}
+	scanErr := scanner.Err()
+	if scanErr != nil {
+		// A child may still be writing after an oversized event stops Scan.
+		// Stop it before Wait so neither side blocks on the abandoned pipe.
+		_ = cmd.Process.Kill()
+	}
 	err = cmd.Wait()
 	switch {
 	case ctx.Err() != nil:
 		return ctx.Err()
+	case scanErr != nil:
+		return fmt.Errorf("download event stream: %w", scanErr)
 	case failure != "":
 		return errors.New(failure)
 	case err != nil:
 		return fmt.Errorf("fornax pull exited (%v): %s", err, tail.String())
+
+	}
+	s.mu.Lock()
+	installed := d.Model != ""
+	s.mu.Unlock()
+	if !installed {
+		return errors.New("download ended without an installed event; retry to verify the installation")
 	}
 	return nil
 }
@@ -469,6 +564,12 @@ func (s *studio) downloadProgress(d *hubDownload, label string, done, total int6
 		sumTotal += f[1]
 	}
 	d.Step, d.Done, d.Total = label, sumDone, max(d.expected, sumTotal)
+	if now := time.Now(); now.Sub(s.lastJournal) > time.Second || done >= total {
+		s.lastJournal = now
+		if err := s.saveDownloadsLocked(); err != nil {
+			d.Error = "Could not save resumable progress: " + err.Error()
+		}
+	}
 	if now := time.Now(); now.Sub(s.lastProgress) > 250*time.Millisecond || done >= total {
 		s.lastProgress = now
 		s.notifyLocked()

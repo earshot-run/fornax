@@ -205,49 +205,6 @@ func sortHFHits(hits []SearchHit, order string) {
 	})
 }
 
-// What pulling a hf: ref would fetch.
-type Preview struct {
-	Repo   string `json:"repo"`
-	File   string `json:"file"`
-	MMProj string `json:"mmproj,omitempty"`
-	Kind   string `json:"kind"`
-	// Weights, projector and split parts together.
-	Bytes int64 `json:"bytes"`
-}
-
-// Resolves ref the way ensureHF does, sizes included, and saves nothing.
-func PreviewHF(ctx context.Context, ref string) (*Preview, error) {
-	repo, revision, file, err := parseHFRef(ref, "")
-	if err != nil {
-		return nil, err
-	}
-	files, err := repoFiles(ctx, repo)
-	if err != nil {
-		return nil, err
-	}
-	if file == "" {
-		if file, err = pickGGUFFile(repo, files); err != nil {
-			return nil, err
-		}
-	}
-	p := &Preview{Repo: repo, File: file, Kind: inferKind(repo, file, findMMProj(files, file) != "")}
-	fetch := []string{file}
-	if p.Kind == "vision" || p.Kind == "audio" || p.Kind == "speech" {
-		if p.MMProj = findMMProj(files, file); p.MMProj != "" {
-			fetch = append(fetch, p.MMProj)
-		}
-	}
-	fetch = append(fetch, splitCompanions(files, file)...)
-	for _, f := range fetch {
-		size, _, err := hfFileSize(ctx, repo, revision, f)
-		if err != nil {
-			return nil, err
-		}
-		p.Bytes += size
-	}
-	return p, nil
-}
-
 // A request to the Hugging Face API carrying the user's token, when there
 // is one, to huggingface.co only.
 func hfRequest(ctx context.Context, method, url string) (*http.Request, error) {

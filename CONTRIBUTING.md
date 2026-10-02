@@ -168,3 +168,16 @@ python3 tests/studio_browser.py --url http://127.0.0.1:7346 \
 
 Use a private log for the studio's key-bearing startup output. Browser checks
 are optional and do not add dependencies to the Go binary or `make verify`.
+
+On Linux, the standard-library-only restart check exercises the actual binary
+against a local HTTP fixture, without upstream downloads or model inference:
+
+```sh
+make build
+python3 tests/studio_download_restart.py --binary ./fornax
+```
+
+It crashes studio during a transfer, verifies its child stops and partial bytes
+survive, restarts, resumes at the correct Range offset, checks the weight SHA-256
+and confirms the installed model appears. Its temporary fixture engine is never
+executed. This test does not establish that real model weights will run.

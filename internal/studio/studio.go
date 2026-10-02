@@ -132,6 +132,8 @@ type studio struct {
 
 	downloads    []*hubDownload
 	lastProgress time.Time
+	lastJournal  time.Time
+	shuttingDown bool
 	// The fornax binary downloads and removals run as; "" is this process's
 	// own. Tests point it at a fake.
 	fornaxPath string
@@ -152,6 +154,9 @@ func newStudio(root, key string) (*studio, error) {
 	}
 	s.generate = func(ctx context.Context, job *studioJob) error {
 		return s.kinds[job.Kind].generate(ctx, job)
+	}
+	if err := s.loadDownloads(); err != nil {
+		return nil, err
 	}
 	s.sd = newSDSlot(dir)
 	s.chat = newChatSlot()
@@ -210,6 +215,7 @@ func Serve(ctx context.Context, port int, noOpen, leash bool) error {
 	go s.reapSD(ctx)
 	go func() {
 		<-ctx.Done()
+		s.interruptDownloads()
 		shutdown, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		srv.Shutdown(shutdown)
@@ -368,6 +374,7 @@ type studioModel struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
 	Repo    string `json:"repo,omitempty"`
+	File    string `json:"file,omitempty"`
 	Kind    string `json:"kind"`
 	Runtime string `json:"runtime"`
 	Params  string `json:"params,omitempty"`
@@ -406,7 +413,7 @@ func (s *studio) handleModels(w http.ResponseWriter, _ *http.Request) {
 			continue
 		}
 		models = append(models, studioModel{
-			ID: spec.ID, Name: modelLabel(spec), Repo: spec.Repo, Kind: spec.Kind.String(), Runtime: spec.Runtime.String(),
+			ID: spec.ID, Name: modelLabel(spec), Repo: spec.Repo, File: spec.Model.File, Kind: spec.Kind.String(), Runtime: spec.Runtime.String(),
 			Params: spec.Params, Quant: spec.Quant(),
 			Bytes: spec.TotalBytes(), Fit: modelrt.Fit(spec.TotalBytes()).String(), Steps: savedSteps(spec.Args),
 			Chat: modelrt.RequireChat(spec) == nil && spec.Kind != catalog.Decision,

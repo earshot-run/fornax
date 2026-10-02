@@ -40,7 +40,7 @@ async def check(url, home, chromium):
         """)
         picks = [
             {"key": "small", "title": "Small model", "kind": "chat", "ref": "hf:org/Small/a.gguf", "bytes": 10**9, "fit": "fits", "blurb": "A compact starter."},
-            {"key": "large", "title": "Large model", "kind": "chat", "ref": "hf:org/Large/b.gguf", "bytes": 20*10**9, "fit": "won't fit", "blurb": "Needs more memory."},
+            {"key": "large", "title": "Large model", "kind": "chat", "ref": "hf:org/Large/b.gguf", "bytes": 20*10**9, "fit": "won't fit", "blurb": "Needs more memory.", "readiness": {"supported": False, "installed": False, "reason": "No compatible engine for this platform."}},
         ]
 
         async def api(route):
@@ -59,7 +59,16 @@ async def check(url, home, chromium):
                 if fail_popular:
                     status, response = 502, "Discovery is offline"
                 else:
-                    response = [{"repo": "org/Recent", "downloads": 42, "ggufs": ["recent.gguf"], "updated": "2026-10-01T00:00:00Z"}]
+                    response = [{"repo": "org/Recent", "downloads": 42, "ggufs": ["recent-Q4_K_M.gguf", "recent-Q8_0-00001-of-00002.gguf", "recent-Q8_0-00002-of-00002.gguf", "mmproj.gguf"], "updated": "2026-10-01T00:00:00Z"}]
+            elif path == "/api/hub/preview":
+                selected = q.get("file", [""])[0]
+                ref = q.get("ref", ["hf:org/Small/a.gguf"])[0]
+                if not selected:
+                    selected = "a.gguf" if q.get("key") else ref.split("/", 2)[2] if ref.count("/") >= 2 else "recent-Q4_K_M.gguf"
+                response = {"fit": "fits", "preview": {"ref": ref if ref.count("/") >= 2 else ref+"/"+selected, "file": selected, "kind": "text", "bytes": 1500000000,
+                    "readiness": {"supported": True, "engine": "llama.cpp", "backend": "cpu", "installed": False, "reason": "Compatible engine build available; downloaded on first use."},
+                    "files": [{"ref": "hf:org/Files/"+selected, "file": selected, "role": "weights", "bytes": 1000000000},
+                        {"ref": "hf:org/Files/mmproj.gguf", "file": "mmproj.gguf", "role": "projector", "flag": "mmproj", "bytes": 500000000}], "args": ["--steps", "4"]}}
             elif path == "/api/hub/search":
                 query = q["q"][0]
                 if query == "old":
@@ -100,6 +109,9 @@ async def check(url, home, chromium):
         await page.route("**/api/**", api)
         await page.goto(url + "/#models")
         await expect(page.get_by_role("heading", name="Small model", exact=True)).to_be_visible()
+        large = page.locator(".pick-card").filter(has=page.get_by_role("heading", name="Large model", exact=True))
+        await expect(large.get_by_role("button", name="Unavailable here", exact=True)).to_be_disabled()
+        await expect(large.get_by_text("No compatible engine for this platform.", exact=True)).to_be_visible()
         await page.get_by_label("Only picks that fit").check()
         await expect(page.get_by_role("heading", name="Large model", exact=True)).to_have_count(0)
         await page.get_by_label("Only picks that fit").uncheck()
@@ -135,6 +147,10 @@ async def check(url, home, chromium):
         await search.fill("")
 
         card = page.locator(".pick-card").filter(has=page.get_by_role("heading", name="Small model", exact=True))
+        await card.get_by_role("button", name="Inspect files", exact=True).click()
+        await expect(card.get_by_text("1.4 GB total model files", exact=True)).to_be_visible()
+        await expect(card.get_by_text("mmproj: mmproj.gguf", exact=True)).to_be_visible()
+        await expect(card.get_by_text("Engine downloads and runtime memory overhead are additional.", exact=True)).to_be_visible()
         await card.get_by_role("button", name="Download", exact=True).click()
         await expect(page.locator("#toast")).to_have_text("Please try again")
         await expect(card.get_by_role("button", name="Download", exact=True)).to_be_enabled()
@@ -150,6 +166,24 @@ async def check(url, home, chromium):
         failed = page.locator(".model-row").filter(has=page.get_by_text("Video retry", exact=True))
         await failed.get_by_role("button", name="Try again", exact=True).click()
         assert any(path == "/api/hub/downloads" and body and body.get("kind") == "video" for path, _, body in requests)
+        await page.evaluate("window.testStudioEvents.onmessage({data: JSON.stringify({jobs: [], library: -1, downloads: []})})")
+
+        # Generic transfers resolve a checked reference before offering Download.
+        recent = page.locator(".result-item").filter(has=page.get_by_text("org/Recent", exact=True))
+        await recent.get_by_role("button", name="Check files", exact=True).click()
+        await expect(recent.get_by_role("button", name="Download", exact=True)).to_be_visible()
+        await expect(recent.get_by_text("1.4 GB total model files", exact=True)).to_be_visible()
+        # Exact choices exclude projectors and noninitial shards and submit the checked ref.
+        choice = page.get_by_label("Weight file for org/Recent", exact=True)
+        await expect(choice.locator("option")).to_have_count(3)
+        await choice.select_option("recent-Q8_0-00001-of-00002.gguf")
+        recent = page.locator(".result-item").filter(has=page.get_by_text("org/Recent", exact=True))
+        await expect(recent.get_by_text("1.4 GB total model files", exact=True)).to_be_visible()
+        await recent.get_by_role("button", name="Download", exact=True).click()
+        assert any(path == "/api/hub/downloads" and body and body.get("ref") == "hf:org/Recent/recent-Q8_0-00001-of-00002.gguf" for path, _, body in requests)
+        await page.evaluate("window.testStudioEvents.onmessage({data: JSON.stringify({jobs: [], library: -1, downloads: [{id:'resume1',ref:'hf:org/Small/Q8_0.gguf',title:'Interrupted quant',state:'interrupted',error:'Studio stopped',request:{key:'small',file:'Q8_0.gguf'}}]})})")
+        await page.get_by_role("button", name="Resume", exact=True).click()
+        assert any(path == "/api/hub/downloads" and body and body.get("file") == "Q8_0.gguf" and body.get("key") == "small" for path, _, body in requests)
         await page.evaluate("window.testStudioEvents.onmessage({data: JSON.stringify({jobs: [], library: -1, downloads: []})})")
 
         for kind, mode in [("text", "chat"), ("image", "image"), ("speech", "voice"), ("video", "video")]:
@@ -191,7 +225,7 @@ async def check(url, home, chromium):
             await page.set_viewport_size({"width": width, "height": 844})
             assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth"), f"overflow at {width}"
         assert not errors, errors
-        print("Studio browser regressions passed: appearance, fit filter, recency sorting, stale search, search errors, download retry/cancel/type, model selection, offline recovery, responsive widths.")
+        print("Studio browser regressions passed: appearance, fit filter, recency sorting, stale search, search errors, download retry/cancel/type/resume, exact file previews, readiness, model selection, offline recovery, responsive widths.")
         await browser.close()
 
 

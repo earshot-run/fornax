@@ -77,6 +77,20 @@ the memory budget; it is an estimate, not a guarantee that a model will run at
 every context size or image resolution. **Open** selects the clicked model in
 its mode; chat opens a new conversation with that model.
 
+**Inspect files** checks every model artifact: weights, split shards, projectors
+and the selected recipe's companion files. The total excludes engine downloads
+and runtime memory overhead. Recipe engine arguments are shown alongside the
+files. Search and discovery offer an exact weight-file selector; projectors and
+noninitial shards are excluded from that selector. **Check files** resolves the
+automatic choice before a generic download, so Download submits the checked
+file. Selecting another quant for a curated model retains its companions and
+arguments. Installed variants are matched by their actual file.
+
+Picks and previews show the compatible engine build, backend and whether the
+engine is already installed. Unsupported platforms or backend overrides disable
+the download button with the reason. A compatible build does not establish that
+an arbitrary model architecture will work or that memory overhead will fit.
+
 Search and discovery default to **Most downloaded**. **Recently updated**
 asks Hugging Face for repos ordered by their last modification time and shows
 that date when available. A recent repo update does not establish model quality
@@ -84,8 +98,14 @@ or runtime compatibility. Engine selection still follows the newest upstream
 release that has a compatible build, as described below.
 
 Running and failed downloads remain visible while you search or change kinds.
-Cancel stops the transfer; **Try again** retries failed requests or interrupted
-downloads with the same model type. Hugging Face errors show a retry action;
+Cancel stops and dismisses the transfer while leaving partial files reusable;
+**Try again** retries failures with the same file choice, model type and recipe.
+Intent and progress are saved privately in `studio/downloads.json`. After a
+shutdown or crash, interrupted transfers appear with **Resume**; they do not
+restart automatically. Resume uses the shared pull path and its range-resume and
+checksum verification. A stale finished entry is hidden after its model files
+are removed. An unreadable journal produces a startup error instead of silently
+overwriting it; move that journal aside to recover without removing model files. Hugging Face errors show a retry action;
 your installed models remain available without model discovery access.
 
 The appearance button cycles **Auto**, **Light** and **Dark**. Auto follows the
@@ -239,7 +259,10 @@ to its own `engine/` directory, so switching never reuses the wrong one.
 repo's file list and picks a quant (Q4_K_M, then Q5_K_M, Q6_K, Q4_K_XL,
 Q8_0…), preferring one that fits this machine's memory when the repo offers a
 choice. Name the file to be exact: `hf:Org/Repo/Model-Q8_0.gguf`. Split
-archives (`-00001-of-0000N`) pull every part; a repo `mmproj-*.gguf`
+archives (`-00001-of-0000N`) pull every part; incomplete archives fail before
+installation, and automatic choices never start on a later shard. Memory-aware
+selection counts all shards and the model's projector. Named revisions use
+that revision's file listing. A repo `mmproj-*.gguf`
 projector attaches itself for vision, audio and speech models; the kind is
 inferred from the name (`rerank`, `embed`, `tts`, `vl`, `asr`…) and `--kind`
 overrides it. `search` with no query lists the most-downloaded GGUF repos; `search <query>` ranks matches.
