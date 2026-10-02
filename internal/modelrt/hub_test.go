@@ -69,7 +69,7 @@ func TestPopularHFFollowsTheKindAndSkipsBundles(t *testing.T) {
 
 func TestSearchHFSendsTheQuery(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("search") != "qwen" || r.URL.Query().Get("full") != "false" {
+		if r.URL.Query().Get("search") != "qwen" || r.URL.Query().Get("full") != "false" || r.URL.Query().Get("sort") != "downloads" || r.URL.Query().Get("direction") != "-1" {
 			t.Errorf("query = %s", r.URL.RawQuery)
 		}
 		w.Write([]byte(`[{"id":"org/Qwen","downloads":1,"siblings":[{"rfilename":"q.gguf"}]}]`))
@@ -85,5 +85,44 @@ func TestSearchHFSendsTheQuery(t *testing.T) {
 	}
 	if len(hits) != 1 || !strings.HasSuffix(hits[0].GGUFs[0], ".gguf") {
 		t.Fatalf("hits = %+v", hits)
+	}
+}
+
+// New discovery must preserve upstream recency order even when an older model
+// has more downloads; popularity remains the CLI's default.
+func TestHFDiscoverySort(t *testing.T) {
+	t.Setenv("FORNAX_HOME", t.TempDir())
+	t.Setenv("HF_TOKEN", "")
+	t.Setenv("HF_ENDPOINT", "")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("sort") != "lastModified" || r.URL.Query().Get("direction") != "-1" {
+			t.Errorf("sort query = %s", r.URL.RawQuery)
+		}
+		w.Write([]byte(`[
+			{"id":"org/Old","downloads":900,"lastModified":"2026-01-01T00:00:00Z","siblings":[{"rfilename":"old.gguf"}]},
+			{"id":"org/New","downloads":2,"lastModified":"2026-10-01T00:00:00Z","siblings":[{"rfilename":"new.gguf"}]}
+		]`))
+	}))
+	defer srv.Close()
+	old := HFHost
+	HFHost = srv.URL
+	t.Cleanup(func() { HFHost = old })
+	for _, search := range []bool{false, true} {
+		var hits []SearchHit
+		var err error
+		if search {
+			hits, err = SearchHFWithSort(context.Background(), "new", 1, "lastModified")
+		} else {
+			hits, err = PopularHFWithSort(context.Background(), "image", 1, "lastModified")
+		}
+		if err != nil || len(hits) != 1 || hits[0].Repo != "org/New" || hits[0].Updated.IsZero() {
+			t.Fatalf("search=%v: hits=%+v, err=%v", search, hits, err)
+		}
+	}
+	if _, err := SearchHFWithSort(context.Background(), "new", 1, "invalid"); err == nil {
+		t.Fatal("invalid search sort accepted")
+	}
+	if _, err := PopularHFWithSort(context.Background(), "", 1, "invalid"); err == nil {
+		t.Fatal("invalid discovery sort accepted")
 	}
 }

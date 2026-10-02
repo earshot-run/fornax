@@ -611,6 +611,7 @@
       autosize();
     },
     models: renderModels,
+    selectModel(id) { store.set(key("model"), id); renderModels(); },
     snapshot(snap, libraryChanged) {
       state.jobs = snap.jobs.filter((j) => j.kind === "speech");
       if (libraryChanged) loadClips();

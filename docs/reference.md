@@ -66,6 +66,32 @@ otherwise they spawn a temporary one on a scratch port and reap it when done.
 `run` flags: `-port N`, `-ctx-size N` (default 16384), `-idle 20m` (stop after
 that long without a request), `-no-connect`, `--events`.
 
+## Studio
+
+`fornax studio` opens the local studio. Chat, Image, Voice and Video each
+link to the Models page when no suitable model is installed.
+
+Models shows your installed models first, then suggested picks with download
+sizes and memory-fit badges. **Only picks that fit** hides suggestions outside
+the memory budget; it is an estimate, not a guarantee that a model will run at
+every context size or image resolution. **Open** selects the clicked model in
+its mode; chat opens a new conversation with that model.
+
+Search and discovery default to **Most downloaded**. **Recently updated**
+asks Hugging Face for repos ordered by their last modification time and shows
+that date when available. A recent repo update does not establish model quality
+or runtime compatibility. Engine selection still follows the newest upstream
+release that has a compatible build, as described below.
+
+Running and failed downloads remain visible while you search or change kinds.
+Cancel stops the transfer; **Try again** retries failed requests or interrupted
+downloads with the same model type. Hugging Face errors show a retry action;
+your installed models remain available without model discovery access.
+
+The appearance button cycles **Auto**, **Light** and **Dark**. Auto follows the
+system preference; appearance, sort and memory filter choices are saved in this
+browser. These settings do not change how the model runs.
+
 ## Install
 
 ```sh

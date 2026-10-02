@@ -107,6 +107,7 @@ type hubDownload struct {
 	Key   string `json:"key,omitempty"`
 	Ref   string `json:"ref"`
 	Title string `json:"title"`
+	Kind  string `json:"kind,omitempty"`
 	// running, done, failed
 	State string `json:"state"`
 	// The file being fetched right now, and how far along the whole pull is.
@@ -234,7 +235,11 @@ func (s *studio) handlePopular(w http.ResponseWriter, r *http.Request) {
 	if kind == "chat" {
 		kind = ""
 	}
-	hits, err := modelrt.PopularHF(r.Context(), kind, 20)
+	order, ok := hubSort(w, r)
+	if !ok {
+		return
+	}
+	hits, err := modelrt.PopularHFWithSort(r.Context(), kind, 20, order)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -243,17 +248,34 @@ func (s *studio) handlePopular(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *studio) handleSearch(w http.ResponseWriter, r *http.Request) {
+	order, ok := hubSort(w, r)
+	if !ok {
+		return
+	}
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	if query == "" {
 		writeJSON(w, http.StatusOK, []modelrt.SearchHit{})
 		return
 	}
-	hits, err := modelrt.SearchHF(r.Context(), query, 20)
+	hits, err := modelrt.SearchHFWithSort(r.Context(), query, 20, order)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
 	writeJSON(w, http.StatusOK, hits)
+}
+
+// Reject unsupported sorts before making an upstream request.
+func hubSort(w http.ResponseWriter, r *http.Request) (string, bool) {
+	order := r.URL.Query().Get("sort")
+	if order == "" {
+		order = "downloads"
+	}
+	if order != "downloads" && order != "lastModified" {
+		http.Error(w, "sort must be downloads or lastModified", http.StatusBadRequest)
+		return "", false
+	}
+	return order, true
 }
 
 func (s *studio) handlePreview(w http.ResponseWriter, r *http.Request) {
@@ -320,7 +342,7 @@ func (s *studio) handleDownload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	d := &hubDownload{ID: newStudioID(), Key: pick.Key, Ref: pick.Ref, Title: pick.Title, State: "running",
+	d := &hubDownload{ID: newStudioID(), Key: pick.Key, Ref: pick.Ref, Title: pick.Title, Kind: pick.pullKind, State: "running",
 		expected: pick.Bytes, Total: pick.Bytes, files: map[string][2]int64{}, cancel: cancel}
 	s.downloads = append(s.downloads, d)
 	s.notifyLocked()

@@ -482,6 +482,7 @@ Studio.register("image", {
     autosize();
   },
   models: renderModels,
+  selectModel(id) { store.set("model", id); renderModels(); },
   snapshot(snap, libraryChanged) {
     state.jobs = snap.jobs.filter((j) => j.kind === "image");
     if (libraryChanged) loadImages();

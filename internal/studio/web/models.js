@@ -14,7 +14,8 @@
   const MODE = { chat: "chat", image: "image", speech: "voice", video: "video" };
   const FIT = { "fits": ["fits", "Fits"], "tight": ["tight", "Tight fit"], "won't fit": ["wont", "Too big"] };
 
-  const state = { token: null, tokenOpen: false, kind: store.get("modelsKind", "all"), picks: [], popular: {}, popularError: {}, memory: 0, backend: "", query: "", results: null, searching: false, previews: {}, downloads: [] };
+  const state = { token: null, tokenOpen: false, kind: store.get("modelsKind", "all"), picks: [], popular: {}, popularError: {}, pending: new Set(), fitOnly: store.get("modelsFitOnly", false), sort: store.get("modelsSort", "downloads"), searchError: "", memory: 0, backend: "", query: "", results: null, searching: false, previews: {}, downloads: [] };
+  if (!["downloads", "lastModified"].includes(state.sort)) state.sort = "downloads";
   const ui = {};
 
   const fmtBytes = (n) => {
@@ -33,17 +34,44 @@
   }
 
   function downloadFor(match) {
-    return state.downloads.find((d) => (match.key && d.key === match.key) || (match.ref && d.ref === match.ref));
+    return [...state.downloads].reverse().find((d) => (match.key && d.key === match.key) || (match.ref && d.ref === match.ref));
   }
 
   async function start(body) {
-    const res = await fetch("/api/hub/downloads", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    if (!res.ok) toast((await res.text()).trim());
+    const key = body.key || body.ref;
+    if (state.pending.has(key)) return;
+    state.pending.add(key);
+    render();
+    try {
+      const res = await fetch("/api/hub/downloads", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (!res.ok) throw new Error((await res.text()).trim() || "Could not start download");
+      const d = await res.json();
+      state.downloads = [...state.downloads.filter((old) => old.id !== d.id), d];
+    } catch (err) { toast(err.message || "Could not start download. Try again."); }
+    finally { state.pending.delete(key); render(); }
+  }
+
+  async function cancelDownload(d) {
+    try {
+      const res = await fetch(`/api/hub/downloads/${d.id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error((await res.text()).trim());
+    } catch (err) { toast(err.message || "Could not cancel download. Try again."); }
+  }
+
+  function retryNotice(text, retry) {
+    const btn = el("button", { type: "button", className: "text-btn", textContent: "Try again" });
+    btn.onclick = retry;
+    return el("div", { className: "model-notice", role: "status" }, el("p", { textContent: text }), btn);
   }
 
   function progress(d) {
-    const frac = d.total ? Math.min(1, d.done / d.total) : 0;
+    const frac = d.total ? Math.max(0, Math.min(1, d.done / d.total)) : 0;
     const bar = el("div", { className: "bar" }, el("i"));
+    bar.setAttribute("role", "progressbar");
+    bar.setAttribute("aria-label", "Model download");
+    bar.setAttribute("aria-valuemin", "0");
+    bar.setAttribute("aria-valuemax", "100");
+    if (d.total) bar.setAttribute("aria-valuenow", String(Math.round(frac * 100)));
     bar.firstChild.style.width = `${(frac * 100).toFixed(1)}%`;
     return bar;
   }
@@ -54,23 +82,26 @@
     if (installedId || d?.state === "done") {
       const id = installedId || d.model;
       const use = el("button", { type: "button", className: "text-btn" }, "Open");
-      use.onclick = () => { if (MODE[kind]) location.hash = "#" + MODE[kind]; };
+      use.onclick = () => { if (MODE[kind]) Studio.openModel(MODE[kind], id); };
       return el("div", { className: "card-action" }, el("span", { className: "installed-mark", title: id }, icon("check"), "Installed"), MODE[kind] ? use : null);
     }
     if (d?.state === "running") {
       const cancel = el("button", { type: "button", className: "icon-btn small-icon", title: "Cancel" }, icon("x"));
-      cancel.onclick = () => fetch(`/api/hub/downloads/${d.id}`, { method: "DELETE" });
-      const pct = d.total ? Math.floor((d.done / d.total) * 100) : 0;
+      cancel.onclick = () => cancelDownload(d);
+      const pct = d.total ? Math.max(0, Math.min(100, Math.floor((d.done / d.total) * 100))) : 0;
       return el("div", { className: "card-progress" },
-        el("div", { className: "card-progress-top" }, el("span", { textContent: `Downloading ${pct}%` }), el("span", { className: "muted", textContent: `${fmtBytes(d.done)} of ${fmtBytes(d.total)}` }), cancel),
+        el("div", { className: "card-progress-top" }, el("span", { textContent: d.total ? `Downloading ${pct}%` : "Preparing download…" }), el("span", { className: "muted", textContent: d.total ? `${fmtBytes(d.done) || "0 MB"} of ${fmtBytes(d.total)}` : "Finding model files" }), cancel),
         progress(d));
     }
     const btn = el("button", { type: "button", className: "action primary" }, icon("down"), "Download");
-    btn.onclick = () => { btn.disabled = true; start(request); };
+    const pending = state.pending.has(request.key || request.ref);
+    btn.disabled = pending;
+    if (pending) btn.lastChild.textContent = "Starting…";
+    btn.onclick = () => start(request);
     const nodes = [btn];
     if (d?.state === "failed") {
       nodes.unshift(el("p", { className: "card-error", textContent: d.error }));
-      btn.lastChild.textContent = "Try again";
+      if (!pending) btn.lastChild.textContent = "Try again";
     }
     return el("div", { className: "card-action" }, ...nodes);
   }
@@ -88,11 +119,16 @@
     if (state.backend) bits.push(`runs on ${state.backend === "cpu" ? "the CPU" : state.backend.toUpperCase()}`);
     bits.push(`${installed} installed`);
     ui.machine.textContent = bits.join(" · ");
+    ui.welcome.hidden = installed > 0 || !!state.query;
+    ui.sort.value = state.sort;
+    ui.popularTitle.textContent = state.sort === "lastModified" ? "Recently updated on Hugging Face" : "Popular on Hugging Face";
+    ui.resultTitle.textContent = state.sort === "lastModified" ? "Recently updated matches" : "Search results";
   }
 
   function renderPicks() {
-    const picks = state.picks.filter((p) => shown(p.kind));
-    ui.picks.hidden = !picks.length || !!state.query;
+    const matching = state.picks.filter((p) => shown(p.kind));
+    const picks = matching.filter((p) => !state.fitOnly || p.fit === "fits");
+    ui.picks.hidden = !matching.length || !!state.query;
     ui.pickGrid.replaceChildren(...picks.map((p) => el("article", { className: "pick-card" },
       el("div", { className: "pick-top" }, el("span", { className: "kind-label", textContent: KINDS.find((k) => k.id === p.kind)?.label || p.kind }), fitPill(p.fit)),
       el("h3", { textContent: p.title }),
@@ -100,6 +136,7 @@
       el("div", { className: "pick-foot" },
         el("span", { className: "muted", textContent: fmtBytes(p.bytes) }),
         actionFor({ key: p.key }, p.installed, p.kind, { key: p.key })))));
+    if (matching.length && !picks.length) ui.pickGrid.append(el("p", { className: "model-notice", textContent: "No picks fit this memory budget. Turn off the filter to see all picks, or search for a smaller model." }));
   }
 
   function renderInstalled() {
@@ -108,7 +145,7 @@
     ui.installedList.replaceChildren(...models.map((m) => {
       const kind = kindOf(m);
       const use = el("button", { type: "button", className: "text-btn", textContent: "Open" });
-      use.onclick = () => { location.hash = "#" + MODE[kind]; };
+      use.onclick = () => Studio.openModel(MODE[kind], m.id);
       const del = el("button", { type: "button", className: "icon-btn small-icon danger-btn", title: "Delete" }, icon("trash"));
       del.onclick = async () => {
         if (!del.classList.contains("armed")) {
@@ -172,16 +209,17 @@
     return el("div", { className: "model-row result-row" },
       el("div", { className: "model-row-main" },
         el("strong", { textContent: h.repo }),
-        el("span", { className: "muted", textContent: `${fmtCount(h.downloads)} downloads · ${h.ggufs.length} GGUF file${h.ggufs.length === 1 ? "" : "s"}` })),
+        el("span", { className: "muted", textContent: `${fmtCount(h.downloads)} downloads · ${h.ggufs.length} GGUF file${h.ggufs.length === 1 ? "" : "s"}${h.updated && Date.parse(h.updated) > 0 ? " · updated " + new Date(h.updated).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : ""}` })),
       el("div", { className: "result-right" }, ...right));
   }
 
   function renderPopular() {
     ui.popular.hidden = !!state.query;
     if (state.query) return;
-    const list = state.popular[state.kind];
+    const cacheKey = state.kind + ":" + state.sort;
+    const list = state.popular[cacheKey];
     if (list == null) { ui.popularList.replaceChildren(el("p", { className: "muted", textContent: "Loading popular models…" })); return; }
-    if (state.popularError[state.kind]) { ui.popularList.replaceChildren(el("p", { className: "muted", textContent: "Couldn't reach Hugging Face." })); return; }
+    if (state.popularError[cacheKey]) { ui.popularList.replaceChildren(retryNotice("Couldn't reach Hugging Face. Your installed models are still available.", () => loadPopular(state.kind, true))); return; }
     if (!list.length) { ui.popularList.replaceChildren(el("p", { className: "muted", textContent: "No popular models in this kind." })); return; }
     const hint = state.kind === "image" || state.kind === "speech" || state.kind === "video" ? state.kind : "";
     ui.popularList.replaceChildren(...list.map((h) => hitRow(h, hint)));
@@ -191,19 +229,25 @@
     ui.results.hidden = !state.query;
     if (!state.query) return;
     if (state.searching && !state.results) { ui.resultList.replaceChildren(el("p", { className: "muted", textContent: "Searching Hugging Face…" })); return; }
+    if (state.searchError) { ui.resultList.replaceChildren(retryNotice(state.searchError, onSearch)); return; }
     const hits = state.results || [];
     if (!hits.length) { ui.resultList.replaceChildren(el("p", { className: "muted", textContent: `No GGUF models match “${state.query}”.` })); return; }
     ui.resultList.replaceChildren(...hits.map((h) => hitRow(h, "")));
   }
 
   function renderDownloads() {
-    // Downloads that started from search results show up there; the rest
-    // (picks) show on their cards. Failures from search stay visible here.
-    const loose = state.downloads.filter((d) => !d.key && d.state !== "done" && !state.query);
-    ui.downloads.hidden = !loose.length;
-    ui.downloadList.replaceChildren(...loose.map((d) => el("div", { className: "model-row" },
-      el("div", { className: "model-row-main" }, el("strong", { textContent: d.title }), el("span", { className: "muted", textContent: d.state === "failed" ? d.error : `${fmtBytes(d.done)} of ${fmtBytes(d.total)}` })),
-      d.state === "running" ? progress(d) : null)));
+    // Keep every active or failed transfer reachable across searches and filters.
+    const active = state.downloads.filter((d) => d.state !== "done");
+    ui.downloads.hidden = !active.length;
+    ui.downloadList.replaceChildren(...active.map((d) => {
+      const dismiss = el("button", { type: "button", className: "icon-btn small-icon", title: d.state === "running" ? "Cancel download" : "Dismiss download" }, icon("x"));
+      dismiss.onclick = () => cancelDownload(d);
+      const retry = el("button", { type: "button", className: "text-btn", textContent: "Try again", disabled: state.pending.has(d.key || d.ref) });
+      retry.onclick = () => start(d.key ? { key: d.key } : { ref: d.ref, kind: d.kind || "" });
+      return el("div", { className: "model-row" },
+        el("div", { className: "model-row-main" }, el("strong", { textContent: d.title }), el("span", { className: d.state === "failed" ? "card-error" : "muted", textContent: d.state === "failed" ? d.error : d.total ? `${fmtBytes(d.done)} of ${fmtBytes(d.total)}` : "Preparing download…" })),
+        d.state === "running" ? progress(d) : retry, dismiss);
+    }));
   }
 
   // The Hugging Face token: only gated models (Llama, some Gemma) need one.
@@ -264,18 +308,23 @@
   }
 
   async function loadPopular(kind = state.kind, force = false) {
-    if (!force && state.popular[kind] && !state.popularError[kind]) return;
-    const qkind = kind === "image" || kind === "speech" || kind === "video" ? kind : "";
+    const order = state.sort;
+    const cacheKey = kind + ":" + order;
+    if (!force && state.popular[cacheKey] && !state.popularError[cacheKey]) return;
+    const q = new URLSearchParams({ sort: order });
+    if (["image", "speech", "video"].includes(kind)) q.set("kind", kind);
+    state.popular[cacheKey] = null;
+    state.popularError[cacheKey] = false;
+    render();
     try {
-      const res = await fetch("/api/hub/popular" + (qkind ? `?kind=${qkind}` : ""));
+      const res = await fetch("/api/hub/popular?" + q);
       if (!res.ok) throw new Error();
-      state.popular[kind] = await res.json();
-      state.popularError[kind] = false;
+      state.popular[cacheKey] = await res.json();
     } catch {
-      state.popular[kind] = [];
-      state.popularError[kind] = true;
+      state.popular[cacheKey] = [];
+      state.popularError[cacheKey] = true;
     }
-    if (state.kind === kind) render();
+    if (state.kind === kind && state.sort === order) render();
   }
 
   async function loadPicks() {
@@ -289,25 +338,32 @@
     render();
   }
 
-  let searchTimer, searchSeq = 0;
+  let searchTimer, searchSeq = 0, searchController;
   function onSearch() {
+    const seq = ++searchSeq; // Invalidate in-flight work on every keystroke, including clearing.
     state.query = ui.search.value.trim();
+    const query = state.query, order = state.sort;
     clearTimeout(searchTimer);
-    if (!state.query) { state.results = null; render(); return; }
-    state.searching = true;
+    searchController?.abort();
     state.results = null;
+    state.searchError = "";
+    state.searching = !!query;
     render();
+    if (!query) return;
     searchTimer = setTimeout(async () => {
-      const seq = ++searchSeq;
+      const controller = new AbortController();
+      searchController = controller;
       try {
-        const res = await fetch(`/api/hub/search?q=${encodeURIComponent(state.query)}`);
-        const hits = res.ok ? await res.json() : [];
-        if (seq !== searchSeq) return;
-        state.results = hits;
-        if (!res.ok) toast("Search failed — is this machine online?");
-      } catch { if (seq === searchSeq) state.results = []; }
-      state.searching = false;
-      render();
+        const q = new URLSearchParams({ q: query, sort: order });
+        const res = await fetch("/api/hub/search?" + q, { signal: controller.signal });
+        if (!res.ok) throw new Error((await res.text()).trim() || "Search failed. Try again.");
+        const hits = await res.json();
+        if (seq === searchSeq) state.results = hits;
+      } catch (err) {
+        if (seq === searchSeq && !controller.signal.aborted) state.searchError = err.message || "Couldn't reach Hugging Face. Try again.";
+      } finally {
+        if (seq === searchSeq) { state.searching = false; render(); }
+      }
     }, 350);
   }
 
@@ -332,20 +388,37 @@
       ui.tabs.setAttribute("role", "group");
       ui.tabs.setAttribute("aria-label", "Kind");
       ui.token = el("div", { className: "token-row" });
+      ui.sort = el("select", { className: "models-sort" },
+        el("option", { value: "downloads", textContent: "Most downloaded" }),
+        el("option", { value: "lastModified", textContent: "Recently updated" }));
+      ui.sort.setAttribute("aria-label", "Sort models");
+      ui.sort.onchange = () => { state.sort = ui.sort.value; store.set("modelsSort", state.sort); onSearch(); loadPopular(); };
+      ui.welcome = el("section", { className: "models-welcome" },
+        el("div", { className: "welcome-mark", ariaHidden: "true" }, icon("models")),
+        el("div", {}, el("span", { className: "eyebrow", textContent: "Your studio, your models" }),
+          el("h2", { textContent: "Make room for your next idea." }),
+          el("p", { textContent: "Start with a pick below. Check its memory fit, download once, and create on your own machine." })),
+        el("span", { className: "welcome-note", textContent: "Chat · Images · Voice · Video" }));
       const head = el("header", { className: "models-head" },
-        el("div", {}, el("h1", { textContent: "Models" }), ui.machine, ui.token),
-        ui.search);
+        el("div", {}, el("h1", { textContent: "Find your next model" }), ui.machine, ui.token),
+        el("div", { className: "models-discovery" }, ui.search, ui.sort));
       ui.downloadList = el("div", { className: "model-list" });
-      ui.downloads = el("section", { className: "models-section" }, el("h2", { textContent: "Downloading" }), ui.downloadList);
+      ui.downloads = el("section", { className: "models-section" }, el("h2", { textContent: "Downloads" }), ui.downloadList);
       ui.pickGrid = el("div", { className: "pick-grid" });
-      ui.picks = el("section", { className: "models-section" }, el("h2", { textContent: "Picks for this machine" }), ui.pickGrid);
+      const fit = el("input", { type: "checkbox", checked: state.fitOnly });
+      fit.onchange = () => { state.fitOnly = fit.checked; store.set("modelsFitOnly", state.fitOnly); renderPicks(); };
+      ui.picks = el("section", { className: "models-section" },
+        el("div", { className: "models-section-head" }, el("h2", { textContent: "Picks for this machine" }),
+          el("label", { className: "fit-filter" }, fit, "Only picks that fit")), ui.pickGrid);
       ui.popularList = el("div", { className: "model-list" });
-      ui.popular = el("section", { className: "models-section" }, el("h2", { textContent: "Popular on Hugging Face" }), ui.popularList);
+      ui.popularTitle = el("h2");
+      ui.popular = el("section", { className: "models-section" }, ui.popularTitle, ui.popularList);
       ui.resultList = el("div", { className: "model-list" });
-      ui.results = el("section", { className: "models-section" }, el("h2", { textContent: "From Hugging Face" }), ui.resultList);
+      ui.resultTitle = el("h2");
+      ui.results = el("section", { className: "models-section" }, ui.resultTitle, ui.resultList);
       ui.installedList = el("div", { className: "model-list" });
       ui.installed = el("section", { className: "models-section" }, el("h2", { textContent: "On this machine" }), ui.installedList);
-      section.append(el("div", { className: "models-page" }, head, ui.tabs, ui.downloads, ui.results, ui.picks, ui.popular, ui.installed));
+      section.append(el("div", { className: "models-page" }, head, ui.welcome, ui.tabs, ui.downloads, ui.installed, ui.results, ui.picks, ui.popular));
       fetch("/api/about").then((r) => (r.ok ? r.json() : {})).then((a) => { state.backend = a.backend || ""; render(); }).catch(() => {});
       loadPicks();
       loadPopular();
@@ -360,6 +433,6 @@
       render();
     },
     show() { document.title = "Models · fornax studio"; loadPicks(); loadPopular(state.kind, true); },
-    filter(kind) { state.kind = kind; render(); },
+    filter(kind) { state.kind = kind; render(); loadPopular(kind); },
   });
 })();

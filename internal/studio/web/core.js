@@ -91,7 +91,9 @@ function libraryHead(title, kind, one, many) {
 function getModel(kind, title, text, className = "empty") {
   const browse = el("button", { type: "button", className: "action primary get-model" }, icon("models"), "Browse models");
   browse.onclick = () => Studio.browse(kind);
-  return el("div", { className }, el("h2", { textContent: title }), el("p", { textContent: text }), browse);
+  const glyph = { chat: "chat", image: "image", speech: "voice", video: "video" }[kind] || "models";
+  return el("div", { className }, el("div", { className: "empty-mark", ariaHidden: "true" }, icon(glyph)),
+    el("h2", { textContent: title }), el("p", { textContent: text }), browse);
 }
 
 const Studio = {
@@ -125,8 +127,17 @@ const Studio = {
     location.hash = "#models";
   },
 
+  // Open the selected installed model, including when its mode is already mounted.
+  async openModel(name, id) {
+    if (!this.models.some((m) => m.id === id)) await this.loadModels();
+    if (!this.models.some((m) => m.id === id) || !this.modes[name]) return;
+    this.show(name);
+    this.modes[name].selectModel?.(id);
+    location.hash = "#" + name;
+  },
+
   show(name) {
-    if (!this.modes[name]) name = "image";
+    if (!this.modes[name]) name = "chat";
     if (this.active === name) return;
     const previous = this.modes[this.active];
     previous?.hide?.();
@@ -176,6 +187,20 @@ const Studio = {
   },
 
   start() {
+    const themes = ["system", "light", "dark"];
+    let theme = store.get("theme", "system");
+    if (!themes.includes(theme)) theme = "system";
+    const toggle = $("theme-toggle");
+    const applyTheme = () => {
+      if (theme === "system") delete document.documentElement.dataset.theme;
+      else document.documentElement.dataset.theme = theme;
+      const next = themes[(themes.indexOf(theme) + 1) % themes.length];
+      toggle.lastChild.textContent = theme === "system" ? "Auto" : theme === "light" ? "Light" : "Dark";
+      toggle.title = `Appearance: ${theme}. Switch to ${next}.`;
+      toggle.setAttribute("aria-label", toggle.title);
+    };
+    toggle.onclick = () => { theme = themes[(themes.indexOf(theme) + 1) % themes.length]; store.set("theme", theme); applyTheme(); };
+    applyTheme();
     this.loadAbout();
     const route = () => this.show(location.hash.slice(1) || store.get("mode", "chat"));
     window.addEventListener("hashchange", route);

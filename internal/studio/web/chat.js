@@ -359,6 +359,7 @@ function mount(section) {
   });
 
   loadList().then(() => {
+    if (chat.conv) return; // A model opened from Models already started a new chat.
     const current = store.get("chatCurrent", null);
     if (current && chat.list.some((c) => c.id === current)) openChat(current);
     else newChat(false);
@@ -816,7 +817,10 @@ function listItem(c) {
   return row;
 }
 
+let conversationSeq = 0;
+
 function newChat(focus) {
+  ++conversationSeq;
   if (chat.stream) stopStream();
   chat.conv = { id: newId(), title: "", model: chat.model, messages: [], fresh: true };
   chat.editing = -1;
@@ -828,10 +832,14 @@ function newChat(focus) {
 }
 
 async function openChat(id) {
+  const seq = ++conversationSeq;
   if (chat.stream) stopStream();
   const res = await fetch(`/api/chats/${id}`);
+  if (seq !== conversationSeq) return;
   if (!res.ok) { toast("That conversation is gone"); loadList(); return; }
-  chat.conv = await res.json();
+  const conv = await res.json();
+  if (seq !== conversationSeq) return;
+  chat.conv = conv;
   chat.editing = -1;
   store.set("chatCurrent", id);
   if (chat.conv.model && chat.models.some((m) => m.id === chat.conv.model) && chat.conv.model !== chat.model) {
@@ -893,7 +901,7 @@ function renderThread() {
 
 function emptyState() {
   if (!chat.models.length) {
-    return getModel("chat", "No chat models yet", "Download one to start. Qwen3 4B is a good first pick.", "empty chat-empty");
+    return getModel("chat", "Your next idea starts here", "Choose a model that fits your machine, then chat, write or explore. Your conversations stay here.", "empty chat-empty");
   }
   const c = caps();
   const sub = c.audio && c.vision ? "It can look at images and listen to audio too. Everything runs on this machine."
@@ -1188,6 +1196,11 @@ function splitThink(msg, raw, split) {
 Studio.register("chat", {
   mount,
   models: setModels,
+  selectModel(id) {
+    if (chat.stream) { toast("Stop the reply first"); return; }
+    pickModel(id);
+    newChat(true);
+  },
   show() {
     if (!chat.mounted) return;
     refreshStatus();

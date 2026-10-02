@@ -146,3 +146,25 @@ whether it is installed (kev checkpoints, Apple's bridge) is judged in
 Open an issue with the command, the error text and `fornax doctor` output.
 For security reports use GitHub's private vulnerability reporting instead of
 a public issue.
+
+## Studio browser checks
+
+The optional `tests/studio_browser.py` uses Python Playwright and Chromium to
+exercise the real embedded frontend with controlled API responses: appearance,
+model selection, discovery sorting, stale searches, retries and responsive
+layouts. It does not download weights or start model runtimes. The Go tests cover
+the server routes and upstream discovery separately.
+
+Build the binary, start a studio using an **isolated** home, then run the check
+from the repository root (adjust the Chromium executable for your machine):
+
+```sh
+make build
+FORNAX_HOME=/tmp/fornax-browser-check ./fornax studio -no-open -port 7346
+# In a second terminal, with Python Playwright available:
+python3 tests/studio_browser.py --url http://127.0.0.1:7346 \
+  --home /tmp/fornax-browser-check --chromium /usr/bin/chromium
+```
+
+Use a private log for the studio's key-bearing startup output. Browser checks
+are optional and do not add dependencies to the Go binary or `make verify`.

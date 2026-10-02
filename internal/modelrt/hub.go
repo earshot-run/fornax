@@ -23,15 +23,26 @@ import (
 
 // One GGUF repo from the Hugging Face search.
 type SearchHit struct {
-	Repo      string   `json:"repo"`
-	Downloads int64    `json:"downloads"`
-	Likes     int64    `json:"likes"`
-	GGUFs     []string `json:"ggufs"`
+	Repo      string    `json:"repo"`
+	Downloads int64     `json:"downloads"`
+	Likes     int64     `json:"likes"`
+	GGUFs     []string  `json:"ggufs"`
+	Updated   time.Time `json:"updated"`
 }
 
 // GGUF repos matching query, most downloaded first, at most limit.
 func SearchHF(ctx context.Context, query string, limit int) ([]SearchHit, error) {
+	return SearchHFWithSort(ctx, query, limit, "downloads")
+}
+
+// SearchHFWithSort ranks matches by downloads or lastModified on Hugging Face.
+func SearchHFWithSort(ctx context.Context, query string, limit int, order string) ([]SearchHit, error) {
+	if err := validateHFSort(order); err != nil {
+		return nil, err
+	}
 	q := url.Values{}
+	q.Set("sort", order)
+	q.Set("direction", "-1")
 	q.Set("search", query)
 	q.Set("filter", "gguf")
 	q.Set("limit", "40")
@@ -44,17 +55,25 @@ func SearchHF(ctx context.Context, query string, limit int) ([]SearchHit, error)
 // A search term makes the API include siblings; without one they arrive
 // only when full=true, and the page needs the .gguf names.
 func PopularHF(ctx context.Context, kind string, limit int) ([]SearchHit, error) {
+	return PopularHFWithSort(ctx, kind, limit, "downloads")
+}
+
+// PopularHFWithSort discovers repos by popularity or their most recent update.
+func PopularHFWithSort(ctx context.Context, kind string, limit int, order string) ([]SearchHit, error) {
+	if err := validateHFSort(order); err != nil {
+		return nil, err
+	}
 	if limit < 1 {
 		limit = 20
 	}
 	pipes := popularPipelines(kind)
 	if len(pipes) == 0 {
-		return popularQuery(ctx, "", limit+8, limit)
+		return popularQuery(ctx, "", limit+8, limit, order)
 	}
 	seen := map[string]bool{}
 	var all []SearchHit
 	for _, pipe := range pipes {
-		hits, err := popularQuery(ctx, pipe, limit+8, 0)
+		hits, err := popularQuery(ctx, pipe, limit+8, 0, order)
 		if err != nil {
 			return nil, err
 		}
@@ -66,7 +85,7 @@ func PopularHF(ctx context.Context, kind string, limit int) ([]SearchHit, error)
 			all = append(all, h)
 		}
 	}
-	sort.SliceStable(all, func(i, j int) bool { return all[i].Downloads > all[j].Downloads })
+	sortHFHits(all, order)
 	if len(all) > limit {
 		all = all[:limit]
 	}
@@ -86,10 +105,10 @@ func popularPipelines(kind string) []string {
 	}
 }
 
-func popularQuery(ctx context.Context, pipeline string, fetch, limit int) ([]SearchHit, error) {
+func popularQuery(ctx context.Context, pipeline string, fetch, limit int, order string) ([]SearchHit, error) {
 	q := url.Values{}
 	q.Set("filter", "gguf")
-	q.Set("sort", "downloads")
+	q.Set("sort", order)
 	q.Set("direction", "-1")
 	q.Set("limit", strconv.Itoa(fetch))
 	q.Set("full", "true")
@@ -142,9 +161,10 @@ func hfModels(ctx context.Context, q url.Values, limit int) ([]SearchHit, error)
 		return nil, fmt.Errorf("huggingface.co answered HTTP %d for the model search", resp.StatusCode)
 	}
 	var raw []struct {
-		ID        string `json:"id"`
-		Downloads int64  `json:"downloads"`
-		Likes     int64  `json:"likes"`
+		ID        string    `json:"id"`
+		Downloads int64     `json:"downloads"`
+		Likes     int64     `json:"likes"`
+		Updated   time.Time `json:"lastModified"`
 		Siblings  []struct {
 			RFilename string `json:"rfilename"`
 		} `json:"siblings"`
@@ -154,7 +174,7 @@ func hfModels(ctx context.Context, q url.Values, limit int) ([]SearchHit, error)
 	}
 	hits := make([]SearchHit, 0, len(raw))
 	for _, r := range raw {
-		hit := SearchHit{Repo: r.ID, Downloads: r.Downloads, Likes: r.Likes, GGUFs: []string{}}
+		hit := SearchHit{Repo: r.ID, Downloads: r.Downloads, Likes: r.Likes, Updated: r.Updated, GGUFs: []string{}}
 		for _, s := range r.Siblings {
 			if strings.HasSuffix(s.RFilename, ".gguf") {
 				hit.GGUFs = append(hit.GGUFs, s.RFilename)
@@ -162,11 +182,27 @@ func hfModels(ctx context.Context, q url.Values, limit int) ([]SearchHit, error)
 		}
 		hits = append(hits, hit)
 	}
-	sort.SliceStable(hits, func(i, j int) bool { return hits[i].Downloads > hits[j].Downloads })
+	sortHFHits(hits, q.Get("sort"))
 	if limit > 0 && len(hits) > limit {
 		hits = hits[:limit]
 	}
 	return hits, nil
+}
+
+func validateHFSort(order string) error {
+	if order != "downloads" && order != "lastModified" {
+		return fmt.Errorf("unknown model sort %q: use downloads or lastModified", order)
+	}
+	return nil
+}
+
+func sortHFHits(hits []SearchHit, order string) {
+	sort.SliceStable(hits, func(i, j int) bool {
+		if order == "lastModified" {
+			return hits[i].Updated.After(hits[j].Updated)
+		}
+		return hits[i].Downloads > hits[j].Downloads
+	})
 }
 
 // What pulling a hf: ref would fetch.

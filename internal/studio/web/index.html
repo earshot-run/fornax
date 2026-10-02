@@ -4,6 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>fornax studio</title>
+<script>
+try {
+  const theme = JSON.parse(localStorage.getItem("studio.theme"));
+  if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+} catch {}
+</script>
 <link rel="icon" type="image/svg+xml" href="/assets/mark.svg">
 <link rel="stylesheet" href="/assets/app.css">
 <link rel="stylesheet" href="/assets/chat.css">
@@ -43,6 +49,7 @@
   <symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.01"/></symbol>
   <symbol id="i-pause" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></symbol>
   <symbol id="i-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M6 10l6-6 6 6M5 20h14"/></symbol>
+  <symbol id="i-theme" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none"/></symbol>
 </svg>
 
 <div class="offline-banner" role="status">Studio stopped. Run <span class="mono">fornax studio</span> again and this page reconnects.</div>
@@ -56,6 +63,7 @@
     <a href="#voice" data-mode="voice"><svg><use href="#i-voice"/></svg>Voice</a>
     <span class="rail-rule" aria-hidden="true"></span>
     <a href="#models" data-mode="models"><svg><use href="#i-models"/></svg>Models</a>
+    <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Appearance: system. Switch to light." title="Appearance: system. Switch to light."><svg><use href="#i-theme"/></svg><span>Auto</span></button>
     <span class="rail-host" id="rail-host" hidden></span>
   </nav>
 

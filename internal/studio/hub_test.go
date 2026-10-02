@@ -73,7 +73,7 @@ echo '{"event":"installed","model":"hf-pic","kind":"image"}'
 	if rec.Code != http.StatusOK {
 		t.Fatalf("download: %d %s", rec.Code, rec.Body)
 	}
-	if d := waitDownload(t, s, func(d *hubDownload) bool { return d.State != "running" }); d.State != "done" {
+	if d := waitDownload(t, s, func(d *hubDownload) bool { return d.State != "running" }); d.State != "done" || d.Kind != "image" {
 		t.Fatalf("download ended %+v", *d)
 	}
 	body, err := os.ReadFile(out)
@@ -188,4 +188,39 @@ func studioPost(t *testing.T, h http.Handler, target, body string, mutate func(*
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
+}
+
+func TestHubSortRoutes(t *testing.T) {
+	t.Setenv("HF_ENDPOINT", "")
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.URL.Query().Get("sort") != "lastModified" {
+			t.Errorf("sort = %q", r.URL.Query().Get("sort"))
+		}
+		w.Write([]byte(`[{"id":"org/New","lastModified":"2026-10-01T00:00:00Z","siblings":[{"rfilename":"new.gguf"}]}]`))
+	}))
+	defer srv.Close()
+	old := modelrt.HFHost
+	modelrt.HFHost = srv.URL
+	t.Cleanup(func() { modelrt.HFHost = old })
+	s := testStudio(t)
+	cookie := func(r *http.Request) { r.AddCookie(&http.Cookie{Name: studioCookie, Value: s.key}) }
+	for _, path := range []string{"/api/hub/popular", "/api/hub/search?q=new&"} {
+		separator := "?"
+		if strings.Contains(path, "?") {
+			separator = ""
+		}
+		rec := studioGet(t, s.handler(7340), "GET", path+separator+"sort=lastModified", "127.0.0.1:7340", cookie)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"updated":"2026-10-01T00:00:00Z"`) {
+			t.Fatalf("sorted %s: %d %s", path, rec.Code, rec.Body)
+		}
+		rec = studioGet(t, s.handler(7340), "GET", path+separator+"sort=wrong", "127.0.0.1:7340", cookie)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("invalid sort: %d", rec.Code)
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("upstream calls = %d; invalid sorts must fail locally", calls)
+	}
 }
