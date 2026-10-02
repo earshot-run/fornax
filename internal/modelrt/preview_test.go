@@ -54,6 +54,9 @@ func TestPreviewMatchesMemoryAwarePullAndRevision(t *testing.T) {
 	if !seenRevision || preview.File != first || preview.Bytes != 160 || len(preview.Files) != 3 || preview.MMProj != "mmproj.gguf" || preview.Revision != "release" {
 		t.Fatalf("preview = %+v", preview)
 	}
+	if preview.FreeDisk == nil || *preview.FreeDisk < 0 {
+		t.Fatalf("preview has no disk capacity: %+v", preview)
+	}
 	if _, err := os.Stat(filepath.Join(root, CustomFile)); !os.IsNotExist(err) {
 		t.Fatalf("preview saved a model: %v", err)
 	}

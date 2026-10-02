@@ -66,6 +66,7 @@ async def check(url, home, chromium):
                 if not selected:
                     selected = "a.gguf" if q.get("key") else ref.split("/", 2)[2] if ref.count("/") >= 2 else "recent-Q4_K_M.gguf"
                 response = {"fit": "fits", "preview": {"ref": ref if ref.count("/") >= 2 else ref+"/"+selected, "file": selected, "kind": "text", "bytes": 1500000000,
+                    "free_disk": 0 if "-00001-of-" in selected else 3*1024**3,
                     "readiness": {"supported": True, "engine": "llama.cpp", "backend": "cpu", "installed": False, "reason": "Compatible engine build available; downloaded on first use."},
                     "files": [{"ref": "hf:org/Files/"+selected, "file": selected, "role": "weights", "bytes": 1000000000},
                         {"ref": "hf:org/Files/mmproj.gguf", "file": "mmproj.gguf", "role": "projector", "flag": "mmproj", "bytes": 500000000}], "args": ["--steps", "4"]}}
@@ -151,6 +152,7 @@ async def check(url, home, chromium):
         await expect(card.get_by_text("1.4 GB total model files", exact=True)).to_be_visible()
         await expect(card.get_by_text("mmproj: mmproj.gguf", exact=True)).to_be_visible()
         await expect(card.get_by_text("Engine downloads and runtime memory overhead are additional.", exact=True)).to_be_visible()
+        await expect(card.get_by_text("3.0 GB free in model storage.", exact=True)).to_be_visible()
         await card.get_by_role("button", name="Download", exact=True).click()
         await expect(page.locator("#toast")).to_have_text("Please try again")
         await expect(card.get_by_role("button", name="Download", exact=True)).to_be_enabled()
@@ -179,6 +181,7 @@ async def check(url, home, chromium):
         await choice.select_option("recent-Q8_0-00001-of-00002.gguf")
         recent = page.locator(".result-item").filter(has=page.get_by_text("org/Recent", exact=True))
         await expect(recent.get_by_text("1.4 GB total model files", exact=True)).to_be_visible()
+        await expect(recent.get_by_text("0 MB free in model storage. A fresh download may need more space; existing partial files can be reused.", exact=True)).to_be_visible()
         await recent.get_by_role("button", name="Download", exact=True).click()
         assert any(path == "/api/hub/downloads" and body and body.get("ref") == "hf:org/Recent/recent-Q8_0-00001-of-00002.gguf" for path, _, body in requests)
         await page.evaluate("window.testStudioEvents.onmessage({data: JSON.stringify({jobs: [], library: -1, downloads: [{id:'resume1',ref:'hf:org/Small/Q8_0.gguf',title:'Interrupted quant',state:'interrupted',error:'Studio stopped',request:{key:'small',file:'Q8_0.gguf'}}]})})")

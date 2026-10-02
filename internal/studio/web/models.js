@@ -153,6 +153,10 @@
         readinessNote(p.readiness),
         el("p", { className: "muted", textContent: "Engine downloads and runtime memory overhead are additional." }));
       if (p.args?.length) panel.append(el("code", { className: "recipe-args", textContent: p.args.join(" ") }));
+      if (Number.isFinite(p.free_disk)) {
+        panel.append(el("p", { className: p.bytes > p.free_disk ? "card-error" : "muted", textContent:
+          `${fmtBytes(p.free_disk) || "0 MB"} free in model storage.${p.bytes > p.free_disk ? " A fresh download may need more space; existing partial files can be reused." : ""}` }));
+      }
     }
     return el("div", { className: "model-inspection" }, button, panel);
   }

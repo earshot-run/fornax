@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"github.com/earshot-run/fornax/internal/catalog"
+	"github.com/earshot-run/fornax/internal/download"
 	"github.com/earshot-run/fornax/internal/paths"
 )
 
@@ -62,6 +63,7 @@ type Preview struct {
 	Files     []PreviewFile    `json:"files"`
 	Args      []string         `json:"args,omitempty"`
 	Readiness RuntimeReadiness `json:"readiness"`
+	FreeDisk  *int64           `json:"free_disk,omitempty"`
 }
 
 // PreviewHF resolves exactly as a repo-only pull does, including memory-aware
@@ -139,6 +141,9 @@ func PreviewHFWithOptions(ctx context.Context, ref, kind string, with []Companio
 		if err := add(cRepo, cRev, cFile, "companion", c.Flag); err != nil {
 			return nil, err
 		}
+	}
+	if free, err := download.FreeSpace(paths.Home()); err == nil {
+		p.FreeDisk = &free
 	}
 	return p, nil
 }

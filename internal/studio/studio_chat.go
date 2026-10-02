@@ -574,7 +574,8 @@ func (s *studio) writeChat(conv *chatConversation) error {
 }
 
 // Newest first by last change.
-func (s *studio) handleListChats(w http.ResponseWriter, _ *http.Request) {
+func (s *studio) handleListChats(w http.ResponseWriter, r *http.Request) {
+	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
 	entries, err := os.ReadDir(filepath.Join(s.dir, "chats"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -590,10 +591,25 @@ func (s *studio) handleListChats(w http.ResponseWriter, _ *http.Request) {
 		if err != nil {
 			continue
 		}
+		if query != "" && !chatMatches(conv, query) {
+			continue
+		}
 		list = append(list, chatSummary{ID: conv.ID, Title: conv.Title, Model: conv.Model, Created: conv.Created, Updated: conv.Updated, Count: len(conv.Messages)})
 	}
 	slices.SortFunc(list, func(a, b chatSummary) int { return b.Updated.Compare(a.Updated) })
 	writeJSON(w, http.StatusOK, list)
+}
+
+func chatMatches(conv *chatConversation, query string) bool {
+	if strings.Contains(strings.ToLower(conv.Title), query) || strings.Contains(strings.ToLower(conv.Model), query) {
+		return true
+	}
+	for _, message := range conv.Messages {
+		if strings.Contains(strings.ToLower(message.Content), query) || strings.Contains(strings.ToLower(message.Reasoning), query) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *studio) handleGetChat(w http.ResponseWriter, r *http.Request) {

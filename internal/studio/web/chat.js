@@ -16,6 +16,10 @@ const chat = {
   models: [],
   model: store.get("chatModel", null),
   list: [],
+  query: "",
+  searchList: null,
+  listError: "",
+  searching: false,
   conv: null,
   status: { state: "" },
   params: { ...PARAM_DEFAULTS, ...store.get("chatParams", {}) },
@@ -308,19 +312,35 @@ function mount(section) {
   u.list = el("div", { className: "chat-list" });
   u.newBtn = el("button", { type: "button", className: "icon-btn small-icon", title: "New chat" }, icon("plus"));
   u.newBtn.onclick = () => newChat(true);
+  u.search = el("input", { type: "search", className: "input chat-search", placeholder: "Search conversations" });
+  u.search.setAttribute("aria-label", "Search conversations");
+  u.search.oninput = searchChats;
   u.side = el("aside", { className: "chat-side" },
     el("div", { className: "chat-side-head" }, el("span", { textContent: "Chats" }), u.newBtn),
+    el("div", { className: "chat-search-wrap" }, u.search),
     u.list);
 
   u.menuBtn = el("button", { type: "button", className: "icon-btn small-icon chat-menu-btn", title: "Chats" }, icon("menu"));
   u.menuBtn.onclick = () => section.classList.toggle("side-open");
   u.title = el("div", { className: "chat-title" });
+  u.saveState = el("button", { type: "button", className: "text-btn chat-save", hidden: true });
+  u.saveState.onclick = () => saveConv();
+  u.saveState.setAttribute("aria-live", "polite");
+  u.exportBtn = el("button", { type: "button", className: "icon-btn small-icon", title: "Export chat", disabled: true }, icon("down"));
+  u.exportPop = el("div", { className: "chat-pop export-pop", hidden: true });
+  const exportOption = (format, label) => {
+    const b = el("button", { type: "button", className: "text-btn", textContent: label });
+    b.onclick = () => { exportChat(format); closePopovers(); };
+    return b;
+  };
+  u.exportPop.append(exportOption("md", "Export Markdown"), exportOption("json", "Export JSON"));
+  u.exportBtn.onclick = () => { const open = u.exportPop.hidden; closePopovers(); u.exportPop.hidden = !open; };
   u.statusDot = el("i", { className: "dot" });
   u.statusText = el("span");
   u.unload = el("button", { type: "button", className: "chat-unload", title: "Unload the model and free its memory" }, icon("power"), el("span", { textContent: "Unload" }));
   u.unload.onclick = unloadModel;
   u.status = el("div", { className: "chat-status" }, u.statusDot, u.statusText, u.unload);
-  const head = el("header", { className: "chat-head" }, u.menuBtn, u.title, u.status);
+  const head = el("header", { className: "chat-head" }, u.menuBtn, u.title, u.saveState, el("div", { className: "pop-anchor" }, u.exportBtn, u.exportPop), u.status);
 
   u.thread = el("div", { className: "chat-thread" });
   u.scroll = el("div", { className: "chat-scroll" }, u.thread);
@@ -350,12 +370,16 @@ function mount(section) {
     if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "o") { e.preventDefault(); newChat(true); }
   });
   document.addEventListener("click", (e) => {
-    for (const pop of [u.modelPop, u.paramPop]) if (!pop.hidden && !pop.parentElement.contains(e.target)) pop.hidden = true;
+    for (const pop of [u.modelPop, u.paramPop, u.exportPop]) if (!pop.hidden && !pop.parentElement.contains(e.target)) pop.hidden = true;
   });
   document.addEventListener("paste", (e) => {
     if (Studio.active !== "chat") return;
     const files = [...(e.clipboardData?.files || [])];
     if (files.length) { e.preventDefault(); attachFiles(files); }
+  });
+  window.addEventListener("beforeunload", (e) => {
+    if (!chat.stream && !chatDrafts.size) return;
+    e.preventDefault(); e.returnValue = "";
   });
 
   loadList().then(() => {
@@ -417,7 +441,7 @@ function mountComposer() {
 
 function closePopovers() {
   let closed = false;
-  for (const pop of [chat.ui.modelPop, chat.ui.paramPop]) if (pop && !pop.hidden) { pop.hidden = true; closed = true; }
+  for (const pop of [chat.ui.modelPop, chat.ui.paramPop, chat.ui.exportPop]) if (pop && !pop.hidden) { pop.hidden = true; closed = true; }
   return closed;
 }
 
@@ -614,8 +638,9 @@ async function addAttachment(blob, kind) {
   chat.pending.push(item);
   renderAttachments();
   const name = await uploadRef(blob);
+  if (!chat.pending.includes(item)) return; // Removed while the upload was in flight.
   item.uploading = false;
-  if (!name) { chat.pending.splice(chat.pending.indexOf(item), 1); }
+  if (!name) { chat.pending.splice(chat.pending.indexOf(item), 1); URL.revokeObjectURL(item.preview); }
   else item.name = name;
   renderAttachments();
 }
@@ -624,7 +649,7 @@ function renderAttachments() {
   const u = chat.ui;
   const nodes = chat.pending.map((p, i) => {
     const remove = el("button", { type: "button", className: "att-x", title: "Remove" }, icon("x"));
-    remove.onclick = () => { chat.pending.splice(i, 1); renderAttachments(); };
+    remove.onclick = () => { chat.pending.splice(i, 1); URL.revokeObjectURL(p.preview); renderAttachments(); };
     const body = p.kind === "image"
       ? el("img", { src: p.preview, alt: "" })
       : el("div", { className: "att-audio" }, icon("voice"), el("span", { textContent: p.label || "Audio" }));
@@ -741,23 +766,65 @@ function encodeWav(samples, rate) {
 // ---------- conversations ----------
 
 async function loadList() {
+  const mutation = listMutation;
   try {
     const res = await fetch("/api/chats");
-    if (res.ok) chat.list = await res.json();
-  } catch {}
+    if (!res.ok) throw new Error((await res.text()).trim() || "Couldn't load conversations");
+    const list = await res.json();
+    if (mutation === listMutation) chat.list = list;
+    chat.listError = "";
+  } catch (err) { chat.listError = err.message || "Couldn't load conversations"; }
   renderList();
+}
+
+let chatSearchSeq = 0, chatSearchTimer, chatSearchController;
+function searchChats() {
+  const seq = ++chatSearchSeq;
+  const query = chat.query = chat.ui.search.value.trim();
+  clearTimeout(chatSearchTimer);
+  chatSearchController?.abort();
+  chat.searchList = null;
+  chat.searchError = "";
+  chat.searching = !!query;
+  renderList();
+  if (!query) return;
+  chatSearchTimer = setTimeout(async () => {
+    const controller = chatSearchController = new AbortController();
+    try {
+      const res = await fetch("/api/chats?" + new URLSearchParams({ q: query }), { signal: controller.signal });
+      if (!res.ok) throw new Error((await res.text()).trim() || "Couldn't search conversations");
+      const matches = await res.json();
+      if (seq === chatSearchSeq) chat.searchList = matches;
+    } catch (err) {
+      if (seq === chatSearchSeq && !controller.signal.aborted) chat.searchError = err.message || "Couldn't search conversations";
+    } finally {
+      if (seq === chatSearchSeq) { chat.searching = false; renderList(); }
+    }
+  }, 200);
 }
 
 function renderList() {
   const u = chat.ui;
   if (u.list.querySelector(".item-rename")) return;
-  if (!chat.list.length) {
-    u.list.replaceChildren(el("p", { className: "chat-list-empty", textContent: "Your conversations show up here." }));
+  const error = chat.query ? chat.searchError : chat.listError;
+  let notice;
+  if (error) {
+    const retry = el("button", { type: "button", className: "text-btn", textContent: "Try again" });
+    retry.onclick = chat.query ? searchChats : loadList;
+    notice = el("div", {}, el("p", { className: "chat-list-empty", textContent: error }), retry);
+  }
+  const base = chat.query ? chat.searchList || [] : chat.list;
+  const drafts = [...chatDrafts.values()].filter((conv) => !deletingChats.has(conv.id) && (!chat.query ||
+    [conv.title, conv.model, ...conv.messages.flatMap((m) => [m.content, m.reasoning])].filter(Boolean).join("\n").toLowerCase().includes(chat.query.toLowerCase())));
+  const list = [...drafts.map((conv) => ({ id: conv.id, title: conv.title, model: conv.model, updated: conv.updated || new Date().toISOString(), unsaved: conv._saveState === "failed" })),
+    ...base.filter((c) => !drafts.some((conv) => conv.id === c.id))];
+  if (chat.searching || !list.length) {
+    u.list.replaceChildren(...(notice ? [notice] : [el("p", { className: "chat-list-empty", role: "status", textContent: chat.searching ? "Searching conversations…" : chat.query ? "No conversations match." : "Your conversations show up here." })]));
     return;
   }
-  const nodes = [];
+  const nodes = notice ? [notice] : [];
   let group = "";
-  for (const c of chat.list) {
+  for (const c of list) {
     const g = dayGroup(c.updated);
     if (g !== group) { group = g; nodes.push(el("div", { className: "chat-group", textContent: g })); }
     nodes.push(listItem(c));
@@ -768,7 +835,7 @@ function renderList() {
 function listItem(c) {
   const active = chat.conv && chat.conv.id === c.id;
   const title = el("span", { className: "item-title", textContent: c.title || "New chat" });
-  const time = el("span", { className: "item-time", textContent: relTime(c.updated) });
+  const time = el("span", { className: "item-time" + (c.unsaved ? " unsaved" : ""), textContent: c.unsaved ? "Unsaved" : relTime(c.updated) });
   const rename = el("button", { type: "button", className: "item-act", title: "Rename" }, icon("edit"));
   const del = el("button", { type: "button", className: "item-act danger", title: "Delete" }, icon("trash"));
   const row = el("div", { className: "chat-item" + (active ? " active" : ""), tabIndex: 0, role: "button" }, title, time, el("span", { className: "item-acts" }, rename, del));
@@ -787,11 +854,18 @@ function listItem(c) {
       const next = input.value.trim();
       input.remove();
       if (save && next && next !== c.title) {
-        const res = await fetch(`/api/chats/${c.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: next }) });
-        if (res.ok) {
-          c.title = next;
-          if (chat.conv && chat.conv.id === c.id) { chat.conv.title = next; renderTitle(); }
-        }
+        const conv = chat.conv?.id === c.id ? chat.conv : chatDrafts.get(c.id);
+        const previous = conv?.title;
+        if (conv) conv.title = next;
+        try {
+          await chatSaves.get(c.id);
+          const res = await fetch(`/api/chats/${c.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: next }) });
+          if (!res.ok) throw new Error((await res.text()).trim() || "Couldn't rename this chat");
+          ++listMutation;
+          for (const list of [chat.list, chat.searchList || []]) for (const item of list) if (item.id === c.id) item.title = next;
+          if (chat.query) searchChats();
+        } catch (err) { if (conv) conv.title = previous; toast(err.message || "Couldn't rename this chat"); }
+        if (conv === chat.conv) renderTitle();
       }
       renderList();
     };
@@ -806,18 +880,36 @@ function listItem(c) {
       setTimeout(() => { del.classList.remove("armed"); row.classList.remove("arming"); del.title = "Delete"; }, 2400);
       return;
     }
-    if (chat.stream && chat.conv?.id === c.id) stopStream();
-    await fetch(`/api/chats/${c.id}`, { method: "DELETE" });
-    chat.list = chat.list.filter((x) => x.id !== c.id);
-    if (chat.conv && chat.conv.id === c.id) {
-      if (chat.list.length) openChat(chat.list[0].id); else newChat(false);
+    if (deletingChats.has(c.id)) return;
+    deletingChats.add(c.id);
+    del.disabled = true;
+    let removed = false;
+    const conv = chat.conv?.id === c.id ? chat.conv : chatDrafts.get(c.id);
+    if (chat.stream?.conv.id === c.id) stopStream();
+    try {
+      await chatSaves.get(c.id);
+      const res = await fetch(`/api/chats/${c.id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error((await res.text()).trim() || "Couldn't delete this chat");
+      removed = true;
+      ++listMutation;
+      chatDrafts.delete(c.id);
+      chat.list = chat.list.filter((x) => x.id !== c.id);
+      if (chat.conv?.id === c.id) newChat(false);
+      if (chat.query) searchChats();
+      renderList();
+    } catch (err) { toast(err.message || "Couldn't delete this chat"); }
+    // Keep a tombstone so late stream finalizers cannot recreate the file.
+    finally {
+      if (!removed) { deletingChats.delete(c.id); if (conv) saveConv(conv); }
+      del.disabled = false;
+      renderList();
     }
-    renderList();
   };
   return row;
 }
 
 let conversationSeq = 0;
+let listMutation = 0;
 
 function newChat(focus) {
   ++conversationSeq;
@@ -833,11 +925,22 @@ function newChat(focus) {
 
 async function openChat(id) {
   const seq = ++conversationSeq;
-  if (chat.stream) stopStream();
-  const res = await fetch(`/api/chats/${id}`);
-  if (seq !== conversationSeq) return;
-  if (!res.ok) { toast("That conversation is gone"); loadList(); return; }
-  const conv = await res.json();
+  const stopped = chat.stream ? stopStream() : null;
+  let conv;
+  try {
+    await stopped;
+    await chatSaves.get(id);
+    conv = chatDrafts.get(id);
+    if (!conv) {
+      const res = await fetch(`/api/chats/${id}`);
+      if (seq !== conversationSeq) return;
+      if (!res.ok) throw new Error(res.status === 404 ? "That conversation is gone" : "Couldn't open this conversation. Try again.");
+      conv = await res.json();
+    }
+  } catch (err) {
+    if (seq === conversationSeq) toast(err.message || "Couldn't open this conversation. Try again.");
+    return;
+  }
   if (seq !== conversationSeq) return;
   chat.conv = conv;
   chat.editing = -1;
@@ -853,22 +956,45 @@ async function openChat(id) {
   scrollToEnd(true);
 }
 
-async function saveConv() {
-  const conv = chat.conv;
-  if (!conv || !conv.messages.length) return;
-  const body = { title: conv.title, model: conv.model, created: conv.created, messages: conv.messages.map(cleanMessage) };
-  try {
-    const res = await fetch(`/api/chats/${conv.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    if (!res.ok) { toast("Couldn't save this chat: " + (await res.text()).trim()); return; }
-    const saved = await res.json();
-    conv.created = saved.created;
-    conv.updated = saved.updated;
-    delete conv.fresh;
-    store.set("chatCurrent", conv.id);
-    const summary = { id: conv.id, title: conv.title, model: conv.model, created: saved.created, updated: saved.updated, count: conv.messages.length };
-    chat.list = [summary, ...chat.list.filter((c) => c.id !== conv.id)];
-    renderList();
-  } catch {}
+const chatSaves = new Map(), chatDrafts = new Map(), deletingChats = new Set();
+function saveConv(conv = chat.conv) {
+  if (!conv?.messages.length || deletingChats.has(conv.id)) return Promise.resolve(false);
+  // Capture now and serialize writes per conversation, including after navigation.
+  const messages = conv.messages.map((m) => ({ ...cleanMessage(m), ...(chat.stream?.msg === m ? { stopped: true } : {}) }));
+  const body = { title: conv.title, model: conv.model, created: conv.created, messages };
+  const raw = JSON.stringify(body);
+  const seq = conv._saveSeq = (conv._saveSeq || 0) + 1;
+  conv._saveState = "saving";
+  chatDrafts.set(conv.id, conv);
+  renderList();
+  if (chat.conv === conv) renderTitle();
+  const save = (chatSaves.get(conv.id) || Promise.resolve()).then(async () => {
+    if (deletingChats.has(conv.id)) return false;
+    try {
+      const res = await fetch(`/api/chats/${conv.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: raw });
+      if (!res.ok) throw new Error((await res.text()).trim() || "Couldn't save this chat");
+      const saved = await res.json();
+      conv.created = saved.created;
+      conv.updated = saved.updated;
+      delete conv.fresh;
+      if (seq === conv._saveSeq) { conv._saveState = "saved"; chatDrafts.delete(conv.id); }
+      if (chat.conv === conv) store.set("chatCurrent", conv.id);
+      const summary = { id: conv.id, title: body.title, model: body.model, created: saved.created, updated: saved.updated, count: messages.length };
+      ++listMutation;
+      chat.list = [summary, ...chat.list.filter((c) => c.id !== conv.id)];
+      renderList();
+      return true;
+    } catch (err) {
+      if (seq === conv._saveSeq) {
+        conv._saveState = "failed";
+        conv._saveError = err.message || "Couldn't save this chat";
+      }
+      return false;
+    } finally { renderList(); if (chat.conv === conv) renderTitle(); }
+  });
+  chatSaves.set(conv.id, save);
+  save.then(() => { if (chatSaves.get(conv.id) === save) chatSaves.delete(conv.id); });
+  return save;
 }
 
 function cleanMessage(m) {
@@ -885,7 +1011,33 @@ function titleFrom(text, refs) {
 }
 
 function renderTitle() {
-  chat.ui.title.textContent = chat.conv?.title || "New chat";
+  const conv = chat.conv, u = chat.ui;
+  u.title.textContent = conv?.title || "New chat";
+  u.exportBtn.disabled = !conv?.messages.length;
+  u.saveState.hidden = !conv?._saveState;
+  u.saveState.disabled = conv?._saveState !== "failed";
+  u.saveState.textContent = conv?._saveState === "failed" ? "Retry save" : conv?._saveState === "saving" ? "Saving…" : "Saved";
+  u.saveState.classList.toggle("failed", conv?._saveState === "failed");
+  u.saveState.title = conv?._saveState === "failed" ? conv._saveError : "Saved privately on this machine";
+}
+
+function exportChat(format) {
+  const conv = chat.conv;
+  if (!conv?.messages.length) return;
+  const messages = conv.messages.map((m) => ({ ...cleanMessage(m), ...(chat.stream?.msg === m ? { stopped: true } : {}) }));
+  const body = { id: conv.id, title: conv.title, model: conv.model, created: conv.created, updated: conv.updated, messages };
+  const content = format === "json" ? JSON.stringify(body, null, 2) + "\n" :
+    `# ${conv.title || "Conversation"}\n\nModel: ${conv.model || "Unknown"}\n\n` + messages.map((m) =>
+      `## ${m.role === "user" ? "You" : m.role === "assistant" ? "Assistant" : "System"}\n\n` +
+      (m.reasoning ? `### Reasoning\n\n${m.reasoning}\n\n### Reply\n\n` : "") + m.content +
+      (m.refs?.length ? "\n\nAttachments (files not included): " + m.refs.join(", ") : "") +
+      (m.error ? `\n\nReply error: ${m.error}` : m.stopped ? "\n\nReply stopped before completion." : "")
+    ).join("\n\n") + "\n";
+  const url = URL.createObjectURL(new Blob([content], { type: format === "json" ? "application/json" : "text/markdown;charset=utf-8" }));
+  const file = (conv.title || "conversation").replace(/[^\p{L}\p{N}._-]+/gu, "-").slice(0, 80) || "conversation";
+  const a = el("a", { href: url, download: `${file}.${format}` });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 // ---------- thread ----------
@@ -975,7 +1127,7 @@ function fillAssistant(node, m, live) {
     retry.onclick = regenerate;
     const copyErr = el("button", { type: "button", className: "text-btn", textContent: "Copy error" });
     copyErr.onclick = () => copy(m.error, "Error copied");
-    parts.push(el("div", { className: "msg-error" }, el("div", { className: "msg-error-head" }, icon("alert"), el("span", { textContent: "The model didn't answer" })),
+    parts.push(el("div", { className: "msg-error" }, el("div", { className: "msg-error-head" }, icon("alert"), el("span", { textContent: m.content || m.reasoning ? "Reply interrupted" : "The model didn't answer" })),
       el("pre", { className: "mono", textContent: m.error }), el("div", { className: "job-actions" }, retry, copyErr)));
   }
   if (!live) {
@@ -1057,6 +1209,7 @@ function send() {
   if (!conv.title) conv.title = titleFrom(text, refs);
   u.input.value = "";
   store.set("chatDraft", "");
+  chat.pending.forEach((p) => URL.revokeObjectURL(p.preview));
   chat.pending = [];
   renderAttachments();
   autosize();
@@ -1076,6 +1229,7 @@ function stopStream() {
   if (!chat.stream) return;
   chat.stream.stopped = true;
   chat.stream.controller.abort();
+  return chat.stream.finished;
 }
 
 async function run() {
@@ -1090,13 +1244,16 @@ async function run() {
   const msg = { role: "assistant", content: "", reasoning: "", model: chat.model };
   conv.messages.push(msg);
   const controller = new AbortController();
-  const stream = { controller, msg, loading: !(chat.status.model === chat.model && chat.status.state === "ready"), started: performance.now(), raw: "" };
+  const stream = { controller, conv, msg, loading: !(chat.status.model === chat.model && chat.status.state === "ready"), started: performance.now(), raw: "" };
+  let finish;
+  stream.finished = new Promise((resolve) => { finish = resolve; });
   chat.stream = stream;
   chat.stick = true;
   renderThread();
   renderTools();
   scrollToEnd(true);
   saveConv();
+  const autosave = setInterval(() => { if (!chatSaves.has(conv.id)) saveConv(conv); }, 3000);
 
   let frame = 0;
   const node = () => chat.ui.thread.querySelector(`.msg.assistant[data-index="${conv.messages.indexOf(msg)}"]`);
@@ -1131,25 +1288,29 @@ async function run() {
     schedule();
   };
 
+  let reader;
   try {
     const body = { model: chat.model, messages: history, temperature: p.temperature, top_p: p.top_p, max_tokens: p.max_tokens, think: chat.think };
     const res = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: controller.signal });
     if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
-    const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
-    let buf = "";
-    for (;;) {
+    reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+    let buf = "", completed = false;
+    while (!completed) {
       const { value, done } = await reader.read();
       if (done) break;
       buf += value;
-      let cut;
-      while ((cut = buf.indexOf("\n\n")) >= 0) {
-        const block = buf.slice(0, cut);
-        buf = buf.slice(cut + 2);
-        let event = "message", data = "";
-        for (const line of block.split("\n")) {
+      if (buf.length > 16 * 1024 * 1024) throw new Error("The reply stream sent an oversized event.");
+      let separator;
+      while ((separator = buf.match(/\r?\n\r?\n/))) {
+        const block = buf.slice(0, separator.index);
+        buf = buf.slice(separator.index + separator[0].length);
+        let event = "message";
+        const lines = [];
+        for (const line of block.split(/\r?\n/)) {
           if (line.startsWith("event:")) event = line.slice(6).trim();
-          else if (line.startsWith("data:")) data += line.slice(5).trim();
+          else if (line.startsWith("data:")) lines.push(line.slice(5).replace(/^ /, ""));
         }
+        const data = lines.join("\n");
         if (!data) continue;
         if (event === "status") {
           const st = JSON.parse(data);
@@ -1158,16 +1319,18 @@ async function run() {
           schedule();
         } else if (event === "error") {
           throw new Error(JSON.parse(data).message);
-        } else if (data !== "[DONE]") {
-          try { onChunk(JSON.parse(data)); } catch {}
-        }
+        } else if (data === "[DONE]") { completed = true; break; }
+        else onChunk(JSON.parse(data));
       }
     }
+    if (!completed) throw new Error("The reply stream ended before completion. Retry to generate a complete reply.");
     if (!msg.content && !msg.reasoning) throw new Error("The model returned an empty reply.");
   } catch (err) {
     if (stream.stopped) msg.stopped = true;
     else msg.error = err.message || String(err);
   } finally {
+    clearInterval(autosave);
+    if (reader) { try { await reader.cancel(); } catch {} reader.releaseLock(); }
     if (frame) cancelAnimationFrame(frame);
     if (thinkStart && !msg.thought) msg.thought = (performance.now() - thinkStart) / 1000;
     if (!msg.perSecond && firstToken && deltas > 4) {
@@ -1176,10 +1339,11 @@ async function run() {
     }
     if (!msg.tokens && deltas && msg.stopped) msg.tokens = deltas;
     if (!msg.reasoning) delete msg.reasoning;
-    chat.stream = null;
+    if (chat.stream === stream) chat.stream = null;
     if (chat.conv === conv) { renderThread(); renderTools(); scrollToEnd(false); }
     refreshStatus();
-    saveConv();
+    saveConv(conv);
+    finish();
   }
 }
 

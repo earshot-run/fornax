@@ -164,10 +164,15 @@ FORNAX_HOME=/tmp/fornax-browser-check ./fornax studio -no-open -port 7346
 # In a second terminal, with Python Playwright available:
 python3 tests/studio_browser.py --url http://127.0.0.1:7346 \
   --home /tmp/fornax-browser-check --chromium /usr/bin/chromium
+python3 tests/studio_chat_browser.py --url http://127.0.0.1:7346 \
+  --home /tmp/fornax-browser-check --chromium /usr/bin/chromium
 ```
 
 Use a private log for the studio's key-bearing startup output. Browser checks
 are optional and do not add dependencies to the Go binary or `make verify`.
+The chat check additionally exercises controlled streaming responses, ordered
+and failed saves, autosaves, navigation, local search, Markdown/JSON exports and
+deletion recovery. These checks do not establish live model compatibility.
 
 On Linux, the standard-library-only restart check exercises the actual binary
 against a local HTTP fixture, without upstream downloads or model inference:

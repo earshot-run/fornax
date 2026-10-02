@@ -531,3 +531,42 @@ func TestChatSlotStopWaitsForReap(t *testing.T) {
 		t.Error("a stopped slot started a new server")
 	}
 }
+
+func TestChatSearchIncludesContentAndPreservesOrder(t *testing.T) {
+	s := testStudio(t)
+	for _, item := range []struct{ id, body string }{
+		{"00000000000000c1", `{"title":"First chat","model":"local-qwen","messages":[{"role":"user","content":"The café is open"}]}`},
+		{"00000000000000c2", `{"title":"Second chat","messages":[{"role":"assistant","content":"Answer","reasoning":"Consider the CAFÉ"}]}`},
+		{"00000000000000c3", `{"title":"Unrelated","messages":[{"role":"user","content":"Hello"}]}`},
+	} {
+		if rec := studioSend(t, s, "PUT", "/api/chats/"+item.id, item.body); rec.Code != http.StatusOK {
+			t.Fatalf("save %s = %d", item.id, rec.Code)
+		}
+	}
+	for _, query := range []struct {
+		value string
+		want  []string
+	}{
+		{"CAF%C3%89", []string{"00000000000000c2", "00000000000000c1"}},
+		{"%20LOCAL-QWEN%20", []string{"00000000000000c1"}},
+		{"second", []string{"00000000000000c2"}},
+		{"missing", nil},
+	} {
+		rec := studioSend(t, s, "GET", "/api/chats?q="+query.value, "")
+		var list []chatSummary
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &list) != nil {
+			t.Fatalf("query %s: %d %s", query.value, rec.Code, rec.Body.String())
+		}
+		if len(list) != len(query.want) {
+			t.Fatalf("query %s: %+v, want %v", query.value, list, query.want)
+		}
+		for i := range list {
+			if list[i].ID != query.want[i] {
+				t.Errorf("query %s: %+v, want %v", query.value, list, query.want)
+			}
+		}
+		if strings.Contains(rec.Body.String(), "Consider") {
+			t.Error("search returned message content instead of summaries")
+		}
+	}
+}

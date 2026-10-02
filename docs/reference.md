@@ -86,6 +86,13 @@ automatic choice before a generic download, so Download submits the checked
 file. Selecting another quant for a curated model retains its companions and
 arguments. Installed variants are matched by their actual file.
 
+File inspection also shows free space on the model storage filesystem when the
+OS reports it. The shared downloader checks the remaining bytes of each known-size
+artifact before starting; saved stream prefixes and completed parallel ranges
+reduce that requirement. A low-space error leaves partial files available for
+retry. Capacity is an estimate rather than a reservation: concurrent downloads,
+engine extraction and generated outputs can still require additional space.
+
 Picks and previews show the compatible engine build, backend and whether the
 engine is already installed. Unsupported platforms or backend overrides disable
 the download button with the reason. A compatible build does not establish that
@@ -111,6 +118,20 @@ your installed models remain available without model discovery access.
 The appearance button cycles **Auto**, **Light** and **Dark**. Auto follows the
 system preference; appearance, sort and memory filter choices are saved in this
 browser. These settings do not change how the model runs.
+
+Chat's **Search conversations** searches saved titles, model names, messages and
+reasoning locally, without contacting a model provider. **Export chat** downloads
+Markdown or JSON with the conversation text and reasoning. Attachment names are
+included, but the image/audio files themselves are not bundled.
+
+Chat saves are ordered per conversation, with partial replies saved about every
+three seconds while streaming. Restored unfinished replies are marked stopped;
+a stream that ends without its completion marker shows an error and keeps its
+partial text. **Retry save** retries a failed write. Unsaved conversations stay
+reachable in the sidebar during this browser session, including after navigation;
+retry or export them before closing the page. The browser asks before leaving
+while a reply or save is unfinished. Switching conversations cannot redirect a
+late save to another chat, and deleting a chat waits for in-flight saves.
 
 ## Install
 

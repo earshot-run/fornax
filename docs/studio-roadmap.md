@@ -48,6 +48,29 @@ Backend fixtures cover recipe totals, revisions, interrupted downloads and
 journal failures. Chromium checks cover choices, inspection, readiness and
 resuming the exact request, alongside the first-pass workflows.
 
+## Storage and conversations
+
+Implemented in the next iteration:
+
+- File inspection shows available disk space. The shared CLI/studio downloader
+  rejects known-size transfers that exceed available capacity, accounts for
+  resumable bytes, and preserves partial files on failure. Capacity probes cover
+  Linux, macOS and Windows without adding dependencies.
+- Local conversation search across titles, models, message text and reasoning,
+  with stale-search cancellation, empty states and service-error retries.
+- Markdown and JSON conversation exports, including reasoning and attachment
+  references, plus browser-session access to failed saves and a retry control.
+- Serialized conversation writes and periodic partial-reply saves; navigation
+  keeps late replies in their original conversation. Deletes wait for existing
+  saves and prevent late stream finalizers from recreating a deleted chat.
+- Strict stream completion, CRLF/multiline SSE support and visible errors for
+  interrupted replies. Removed/uploading attachments no longer corrupt the
+  pending list, and preview URLs are released after removal or sending.
+
+Go fixtures exercise disk failures and local search. Chromium checks exercise
+ordered writes, autosaves, navigation after failed saves, exports, interrupted
+streams, search recovery and deletion failures. Live inference remains separate.
+
 ## Remaining validation and follow-up
 
 1. Verify representative chat/image/voice inference on supported hardware with
@@ -57,8 +80,10 @@ resuming the exact request, alongside the first-pass workflows.
 2. Add explicit architecture/recipe validation for arbitrary discovered models,
    beyond engine/platform availability. A popularity or recency score cannot
    establish local compatibility.
-3. Consider a recommendation refresh policy and disk-space checks once the
-   selected recipes can be validated against live upstream sources.
+3. Consider a recommendation refresh policy once selected recipes can be
+   validated against live upstream sources. Storage checks now cover individual
+   transfers; aggregate reservations and engine-extraction estimates remain
+   follow-up work.
 
 Keep new work on Resolve/Pull/WithServer paths, with failure-path checks, and
 preserve loopback authentication and artifact verification.

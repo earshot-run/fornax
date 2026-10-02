@@ -44,6 +44,9 @@ func Fetch(ctx context.Context, url string, expected int64, path string, progres
 	if expected <= 0 {
 		return fetchUnsized(ctx, url, path, progress)
 	}
+	if err := checkSpace(path, expected-paths.PartialBytes(path, expected), FreeSpace); err != nil {
+		return err
+	}
 	if expected >= parallelMin {
 		err := fetchRanges(ctx, url, expected, path, progress)
 		if !errors.Is(err, errNoRanges) {
@@ -201,6 +204,9 @@ func fetchUnsized(ctx context.Context, url, path string, progress func(int64)) e
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("download returned HTTP %d", resp.StatusCode)
+	}
+	if err := checkSpace(path, resp.ContentLength, FreeSpace); err != nil {
+		return err
 	}
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
