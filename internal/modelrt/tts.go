@@ -1,9 +1,5 @@
 package modelrt
 
-// Text to speech through `llama-tts`, a foreground tool that ships in the
-// same llama.cpp build as llama-server. Qwen3-TTS clones a voice
-// from a few seconds of reference audio (--tts-speaker-file).
-
 import (
 	"context"
 	"fmt"
@@ -30,10 +26,6 @@ func PrepareSpeech(ctx context.Context, spec *catalog.Spec, eng *catalog.EngineS
 
 // Synthesize to outPath ("-" streams the WAV to stdout) and report it.
 func RunSay(ctx context.Context, root string, eng *catalog.EngineSpec, spec *catalog.Spec, prompt, outPath, voice, lang string, frames int) error {
-	binary := paths.EngineBinary(root, eng, eng.TTS)
-	if info, err := os.Stat(binary); err != nil || info.IsDir() {
-		return fmt.Errorf("the installed llama.cpp is missing %s — reinstall the engine", eng.TTS)
-	}
 	toStdout := outPath == "-"
 	work := outPath
 	if toStdout {
@@ -53,7 +45,7 @@ func RunSay(ctx context.Context, root string, eng *catalog.EngineSpec, spec *cat
 	elapsed := time.Since(started)
 	info, err := os.Stat(work)
 	if err != nil || info.Size() == 0 {
-		return fmt.Errorf("llama-tts finished but wrote no audio")
+		return fmt.Errorf("speech synthesis finished but wrote no audio")
 	}
 	if toStdout {
 		f, err := os.Open(work)
@@ -70,9 +62,19 @@ func RunSay(ctx context.Context, root string, eng *catalog.EngineSpec, spec *cat
 	return nil
 }
 
-// One llama-tts run: every caller synthesizes to a file and narrates on
-// stderr, so stdout stays whatever the command itself writes.
 func Synthesize(ctx context.Context, root string, eng *catalog.EngineSpec, spec *catalog.Spec, prompt, out, voice, lang string, frames int) error {
+	if voice == "" {
+		defaultVoice := filepath.Join(root, "voices", spec.ID+".wav")
+		if _, err := os.Stat(defaultVoice); err == nil {
+			voice = defaultVoice
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("could not read the reference voice: %w", err)
+		}
+	}
+	if cfg, err := paths.LoadConfig(root); err == nil && spec.Port > 0 && cfg.APIKey != "" && speechServed(spec, spec.Port, cfg.APIKey) {
+		fmt.Fprintln(os.Stderr, ui.Dim(fmt.Sprintf("reusing %s on :%d", spec.ID, spec.Port)))
+		return requestSpeech(ctx, spec.Port, cfg.APIKey, prompt, out, voice, lang, frames)
+	}
 	cmd, err := TTSCommand(ctx, root, eng, spec, prompt, out, voice, lang, frames)
 	if err != nil {
 		return err
@@ -104,6 +106,9 @@ func TTSCommand(ctx context.Context, root string, eng *catalog.EngineSpec, spec 
 		}
 	}
 	binary := paths.EngineBinary(root, eng, eng.TTS)
+	if info, err := os.Stat(binary); err != nil || info.IsDir() {
+		return nil, fmt.Errorf("the installed llama.cpp is missing %s — reinstall the engine", eng.TTS)
+	}
 	args := []string{
 		"-m", paths.ModelFinal(root, spec),
 		"-mm", paths.FilePath(root, spec, spec.MMProj),

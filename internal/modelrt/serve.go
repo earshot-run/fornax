@@ -357,13 +357,9 @@ func freePort(base int) (int, error) {
 	return 0, fmt.Errorf("no free loopback port near %d", base)
 }
 
-// run and connect both need a model with a server behind it. An image model
-// serves OpenAI's images API; video and speech are foreground tools.
+// run and connect both need a model with a server behind it.
 func requireServer(spec *catalog.Spec) error {
-	if spec.Runtime == catalog.SD && spec.Kind == catalog.Image {
-		return nil
-	}
-	if spec.Runtime != catalog.SD && spec.Kind != catalog.Speech {
+	if spec.Runtime != catalog.SD || spec.Kind == catalog.Image {
 		return nil
 	}
 	does, command, operands := Instead(spec)
@@ -382,6 +378,9 @@ func Serve(ctx context.Context, id string, port, ctxSize int, noConnect bool, id
 	}
 	if err := requireServer(spec); err != nil {
 		return err
+	}
+	if spec.Kind == catalog.Speech && spec.MMProj == nil {
+		return fmt.Errorf("%s has no speech projector; add one with fornax pull --mmproj", spec.ID)
 	}
 	servePort := spec.Port
 	if port != 0 {
@@ -471,10 +470,22 @@ func Serve(ctx context.Context, id string, port, ctxSize int, noConnect bool, id
 		killAndReap(cmd, exited)
 		return err
 	}
+	var panel func(url, key string)
+	if spec.Kind == catalog.Speech {
+		if !speechServed(spec, servePort, key) {
+			killAndReap(cmd, exited)
+			return fmt.Errorf("%s is not serving audio; speech needs llama-server with /tts support (fornax upgrade -engine) and a matching projector", spec.ID)
+		}
+		noConnect = true
+		panel = func(_ string, key string) {
+			fmt.Printf("    %s %s\n", ui.Dim("speech:"), speechURL(servePort))
+			fmt.Printf("    %s %s\n", ui.Dim("key:"), key)
+		}
+	}
 	probe := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{Proxy: nil}}
 	return holdServing(ctx, &serving{
 		spec: spec, port: servePort, key: key, noConnect: noConnect, idle: idle,
-		process: serverName, exited: exited, stop: func() { killAndReap(cmd, exited) },
+		process: serverName, exited: exited, stop: func() { killAndReap(cmd, exited) }, panel: panel,
 		sample: func() (string, bool) { return metricsFingerprint(probe, servePort, key) },
 	})
 }
@@ -508,7 +519,7 @@ func holdServing(ctx context.Context, s *serving) error {
 		default:
 			reportConnect(url, s.key, s.spec.ID)
 		}
-		if s.spec.Runtime == catalog.Llama && s.spec.Kind != catalog.Embed && s.spec.Kind != catalog.Rerank {
+		if s.spec.Runtime == catalog.Llama && s.spec.Kind != catalog.Embed && s.spec.Kind != catalog.Rerank && s.spec.Kind != catalog.Speech {
 			fmt.Println(anthropicLine(url, s.key))
 		}
 		if s.idle > 0 {
@@ -562,6 +573,9 @@ func Connect(id string, port int) error {
 		return fmt.Errorf("%s serves images, not chat — Earshot registers chat models. Point a client at %s/images/generations with the key `fornax run %s` prints",
 			spec.ID, paths.EndpointURL(spec.Port), spec.ID)
 	}
+	if spec.Kind == catalog.Speech {
+		return fmt.Errorf("%s serves speech at /tts; run it with `fornax run %s`", spec.ID, spec.ID)
+	}
 	servePort := spec.Port
 	if port != 0 {
 		servePort = port
@@ -614,6 +628,6 @@ type serving struct {
 	exited    <-chan error
 	stop      func()
 	sample    func() (string, bool)
-	// Replaces the chat connect block when set (image models).
+	// Replaces the chat connect block for images and speech.
 	panel func(url, key string)
 }

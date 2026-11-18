@@ -1,11 +1,5 @@
 package main
 
-// `say` — text to speech through `llama-tts`, a foreground tool that ships
-// in the same llama.cpp build as llama-server. Qwen3-TTS clones a
-// voice from a few seconds of reference audio (--tts-speaker-file), which is
-// the part of a voice studio worth salvaging: one flag, no training, no
-// cloud.
-
 import (
 	"context"
 	"flag"
@@ -96,7 +90,7 @@ func runSayTest(ctx context.Context, spec *catalog.Spec, eng *catalog.EngineSpec
 	}
 	info, err := os.Stat(work)
 	if err != nil || info.Size() == 0 {
-		return fmt.Errorf("llama-tts wrote no audio")
+		return fmt.Errorf("speech synthesis wrote no audio")
 	}
 	fmt.Printf("%s %s — synthesized %s of audio in %.1fs\n",
 		ui.Green("✓"), ui.Bold(spec.ID), ui.Dim(ui.HumanSize(info.Size())), time.Since(started).Seconds())
@@ -117,7 +111,7 @@ func speechSpec(root string) *catalog.Spec {
 func speakText(ctx context.Context, spec *catalog.Spec, text string) error {
 	root := paths.Home()
 	eng, err := modelrt.LlamaEngine()
-	if err != nil || eng.TTS == "" {
+	if err != nil {
 		return fmt.Errorf("no speech engine on this platform")
 	}
 	tmp, err := os.CreateTemp("", "fornax-speak-*.wav")

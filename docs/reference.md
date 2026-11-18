@@ -41,7 +41,7 @@ what agents should read.
 
 | Command | What it does |
 | --- | --- |
-| `fornax run <model>` | Serve on loopback, register with Earshot; Ctrl-C stops. `-idle 20m` stops an unused server; `--events` emits one JSON line per stage for supervisors; flags after `--` go to llama-server unchanged (`run m -- --flash-attn`). An image model serves OpenAI's images API instead — see Images over HTTP |
+| `fornax run <model>` | Serve on loopback and register chat models with Earshot. Ctrl-C stops. `-idle 20m` stops an unused server, `--events` emits JSON lines for supervisors, and flags after `--` go to llama-server. See [Images over HTTP](#images-over-http) and [Speech over HTTP](#speech-over-http) |
 | `fornax ps` | Which models are serving right now |
 | `fornax connect <model>` | Register an already-running model's server with Earshot |
 
@@ -171,7 +171,7 @@ or downloads the public release with curl otherwise. Shell completions:
 
 ## How it connects to Earshot
 
-When `run` is serving, fornax reads the daemon's private control
+When `run` is serving a chat model, fornax reads the daemon's private control
 capability (`~/.earshot/control.json`, same-user only) and POSTs the server's
 loopback URL to `/v1/local-models/manage`. Earshot probes `/v1/models` itself
 and offers the model in the agent's picker. Older daemons without that route,
@@ -236,6 +236,7 @@ require a generated API key (`~/.fornax/server.key`, mode 600).
   models/<id>/<file>         weights + projectors
   models/<id>/*.part         resumable downloads
   models/apple-fm/fm-bridge  compiled Swift bridge for apple-fm
+  voices/<id>.wav            optional reference for a speech model
   server.key                 loopback API key
   config.json                settings
   custom.json                models added via `pull hf:…`
@@ -410,15 +411,30 @@ tool reuse a model already serving under `run`, so the weights load once.
 Video is not served — OpenAI has no video route and a clip takes minutes, so
 `run` on a video model points at `animate`. `connect` does not register image
 models with Earshot, whose picker is chat models.
-Speech models run through `llama-tts` in the same llama.cpp build —
-foreground, no server — writing a 24 kHz WAV per call; `-voice take.wav`
-clones a voice from a reference take. Embed and rerank models are served by
-the same llama.cpp with `--embeddings`/`--reranking`, so `run`/`ps`/
-`connect` work on them too.
+### Speech over HTTP
+
+`fornax run <speech-model>` keeps the model and its projector loaded in
+`llama-server`. It serves `POST /tts` on loopback with the generated bearer
+key. This needs a llama.cpp build with [speech serving](https://github.com/ggml-org/llama.cpp/pull/26603).
+Use `fornax upgrade -engine` if your build predates it.
+
+`fornax say` reuses the server on the model's assigned port when it advertises
+audio output, otherwise it calls `llama-tts` for that utterance. Both write a
+WAV. `-lang` picks the language where the model supports it and `-n` caps the
+number of audio frames.
+
+To give a cloning model such as Qwen3-TTS Base a consistent narrator, pass
+`-voice take.wav` on each call or put your own reference WAV at
+`$FORNAX_HOME/voices/<model-id>.wav` (`~/.fornax/voices/<model-id>.wav` by default).
+An explicit `-voice` wins. Calls that use HTTP directly send their reference
+through `speaker_ref_b64`. A Base model may vary its speaker without a reference.
 
 Speech output and reference paths are relative to the directory where you
 invoked fornax, including through MCP. The engine's working directory does
 not change where those files are read or written.
+
+Embed and rerank models are served by the same llama.cpp with
+`--embeddings`/`--reranking`, so `run`/`ps`/`connect` work on them too.
 
 `fornax pull ollama:<name>[:<tag>]` (or an ollama.com/library URL) resolves
 against the Ollama registry: the manifest's layers are the weights and, when
